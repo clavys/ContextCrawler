@@ -13,8 +13,8 @@ Test UNITAIRE pur, pas d'intégration.
 - Pas de chargement de contexte Spring.
 - Pas d'appel réseau, base de données, filesystem.
 - AUCUNE reflection dans le code de test :
-    pas de ReflectionTestUtils.setField, pas de ReflectionTestUtils.invokeMethod,
-    pas de Field.setAccessible(true).
+  pas de ReflectionTestUtils.setField, pas de ReflectionTestUtils.invokeMethod,
+  pas de Field.setAccessible(true).
 - Mockito @InjectMocks autorisé (injection framework, pas reflection utilisateur).
 - Le seul critère obligatoire : le fichier généré doit compiler.
 - Toute dépendance non triviale est mockée.
@@ -22,7 +22,7 @@ Test UNITAIRE pur, pas d'intégration.
 # Stack imposée
 - JUnit 5 (`org.junit.jupiter.api.*`)
 - Mockito (`@Mock`, `@InjectMocks`, `@ExtendWith(MockitoExtension.class)`,
-            `when(...).thenReturn(...)`, `verify(...)`, `mockStatic(...)`)
+  `when(...).thenReturn(...)`, `verify(...)`, `mockStatic(...)`)
 - AssertJ (`assertThat(...).isEqualTo/isNull/hasFieldOrPropertyWithValue/...`)
 ```
 
@@ -841,6 +841,25 @@ fonction construirePistes(champ, sources) → List<String>
 
 ## 5. Modèles de données
 
+> **Note importante — pseudo-code vs implémentation**
+>
+> Les noms français de cette section (`ContexteResultat`, `methodeCible`,
+> `champs`, `protocoleInit`, etc.) sont du **pseudo-code de spécification**
+> et n'apparaissent jamais tels quels dans le code Kotlin du plugin.
+>
+> L'implémentation Kotlin utilise systématiquement les noms anglais définis
+> dans la **table de traduction de ARCHITECTURE.md §3bis**, qui est la
+> source de vérité unique pour cette traduction.
+>
+> Exemples de correspondance :
+> - `ContexteResultat` → `ContextResult`
+> - `methodeCible` → `targetMethod`
+> - `StrategieInit` → `InitStrategy`
+> - `ChampSUT` → `SutField`
+>
+> Si un terme français n'est pas couvert par la table, l'ajouter dans
+> ARCHITECTURE.md §3bis **avant** de l'utiliser en code.
+
 ```kotlin
 // ───────── Types résolus ─────────
 data class TypeResolu(
@@ -1049,12 +1068,12 @@ new {sutFqName}({paramètres avec types qualifiés})
 
 {Pour chaque champ dont strategieRecommandee != CONSTRUCTOR/IMPLICIT/MOCKITO_INJECT_MOCKS :}
 
-  ## Champ `{champ.nom}` : {champ.type}
-  Stratégie : {strategieRecommandee.kind}
+## Champ `{champ.nom}` : {champ.type}
+Stratégie : {strategieRecommandee.kind}
 
-  {selon kind :}
-    SETTER :
-      sut.{methode}(mockOf{type});
+{selon kind :}
+SETTER :
+sut.{methode}(mockOf{type});
 
     CALL_POST_CONSTRUCT :
       sut.{methode}();   // @PostConstruct
@@ -1098,22 +1117,22 @@ new {sutFqName}({paramètres avec types qualifiés})
 
 # Mocks (annoter @Mock {typeDeclare})
 {Pour chaque mock :}
-  ## {typeDeclare}  (concret : {classeConcrete})
-  Méthodes à stubber :
-  - {signatureMockee complète}
-    {si throws : "throws {liste}"}
+## {typeDeclare}  (concret : {classeConcrete})
+Méthodes à stubber :
+- {signatureMockee complète}
+  {si throws : "throws {liste}"}
 
 # Sous-méthodes internes (information seulement, ne pas mocker)
 {Pour chaque :}
-  ## {classe}#{méthode}{signature}
-  - lance : {exceptions}
-  - appels-clés : {résumé}
+## {classe}#{méthode}{signature}
+- lance : {exceptions}
+- appels-clés : {résumé}
 
 # Structures de données à construire
 {Pour chaque DTO :}
-  ## {fqName} [{pattern}]
-  {selon pattern : RECORD, BUILDER, CONSTRUCTOR, SETTER_BASED, ENUM, SEALED, STATIC_FACTORY}
-  Contraintes de validation : {annotationsValidation}
+## {fqName} [{pattern}]
+{selon pattern : RECORD, BUILDER, CONSTRUCTOR, SETTER_BASED, ENUM, SEALED, STATIC_FACTORY}
+Contraintes de validation : {annotationsValidation}
 
 # Appels statiques utilisateur détectés
 {si présents : "À mocker via Mockito.mockStatic({classe}.class) :"}

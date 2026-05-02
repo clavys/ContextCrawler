@@ -70,22 +70,23 @@ com.contextextractor
 │   │   └── MethodSignature.kt
 │   ├── classifier/
 │   │   ├── ClassClassifier.kt           (interface)
-│   │   ├── DefaultClassifier.kt
+│   │   ├── DefaultClassifier.kt         (étape 1: stub vide; impl. étape 4)
 │   │   └── ClassificationRule.kt        (règles personnalisables)
 │   ├── strategy/
 │   │   ├── ContextStrategy.kt           (interface)
 │   │   ├── StrategyInput.kt
 │   │   ├── StrategyRegistry.kt
-│   │   └── StrategyConfig.kt
+│   │   ├── StrategyConfig.kt
+│   │   └── Budget.kt                    (data class — voir STRATEGIE.md §2.3)
 │   ├── prompt/
 │   │   ├── PromptBuilder.kt             (orchestrateur du pipeline)
 │   │   ├── PromptContext.kt             (état du pipeline)
 │   │   ├── PromptStage.kt               (interface)
 │   │   ├── stages/
-│   │   │   ├── ContextRenderStage.kt
-│   │   │   ├── MetaPromptComposeStage.kt
-│   │   │   ├── LayerCompositionStage.kt
-│   │   │   └── CleanupStage.kt
+│   │   │   ├── ContextRenderStage.kt    (étape 5)
+│   │   │   ├── MetaPromptComposeStage.kt(étape 5)
+│   │   │   ├── LayerCompositionStage.kt (étape 5)
+│   │   │   └── CleanupStage.kt          (étape 5)
 │   │   ├── template/
 │   │   │   ├── TemplateEngine.kt        (Mustache-like + includes)
 │   │   │   ├── TemplateLoader.kt        (interface)
@@ -147,6 +148,113 @@ com.contextextractor
     ├── logging/ExtractorLogger.kt
     └── di/ServiceFactory.kt             (mince, juste le câblage)
 ```
+
+---
+
+---
+
+## 3bis. Table de traduction FR → EN (référence canonique)
+
+STRATEGIE.md utilise des noms français pour le pseudo-code algorithmique
+(`ContexteResultat`, `methodeCible`, `champs`, etc.). L'**implémentation
+Kotlin** utilise systématiquement les versions anglaises listées ci-dessous.
+
+Cette table est la **source de vérité unique** pour la traduction —
+ne pas inventer de nouveaux noms ailleurs.
+
+### Modèles de contexte
+
+| STRATEGIE.md (FR)        | Kotlin (EN)              |
+|--------------------------|--------------------------|
+| `ContexteResultat`       | `ContextResult`          |
+| `ContextTree`            | `ContextTree`            |
+| `methodeCible`           | `targetMethod`           |
+| `champs`                 | `fields`                 |
+| `hierarchie`             | `hierarchy`              |
+| `planInstanciation`      | `instantiationPlan`      |
+| `protocoleInit`          | `initProtocol`           |
+| `ordreInitialisation`    | `initOrder`              |
+| `diagnosticTestabilite`  | `testabilityDiagnostic`  |
+| `callGraphIntraSUT`      | `intraSutCallGraph`      |
+| `tronque`                | `truncated`              |
+| `raisonsTroncature`      | `truncationReasons`      |
+| `logiquesInternes`       | `internalLogics`         |
+| `mocks`                  | `mocks`                  |
+| `dataStructures`         | `dataStructures`         |
+| `statiques`              | `staticCalls`            |
+
+### Stratégie d'init et sources
+
+| STRATEGIE.md (FR)        | Kotlin (EN)              |
+|--------------------------|--------------------------|
+| `StrategieInit`          | `InitStrategy`           |
+| `SourceInit`             | `InitSource`             |
+| `MethodInitKind`         | `MethodInitKind`         |
+| `ProtocoleInitChamp`     | `FieldInitProtocol`      |
+| `DiagnosticTestabilite`  | `TestabilityDiagnostic`  |
+| `CheminInitialisation`   | `InitPath`               |
+
+### Descripteurs
+
+| STRATEGIE.md (FR)        | Kotlin (EN)              |
+|--------------------------|--------------------------|
+| `ChampSUT`               | `SutField`               |
+| `ConstructeurChoisi`     | `SelectedConstructor`    |
+| `SignatureMockee`        | `MockedSignature`        |
+| `LogiqueInterne`         | `InternalLogic`          |
+| `NiveauHierarchie`       | `HierarchyLevel`         |
+| `AnalyseMethodeCible`    | `TargetMethodAnalysis`   |
+| `MockInfo`               | `MockInfo`               |
+| `DataStructureInfo`      | `DataStructureInfo`      |
+| `ChampData`              | `DataField`              |
+| `BuilderInfo`            | `BuilderInfo`            |
+| `MethodeBuilder`         | `BuilderMethod`          |
+| `FactoryInfo`            | `FactoryInfo`            |
+| `CollectionInfo`         | `CollectionInfo`         |
+| `StatiqueInfo`           | `StaticCallInfo`         |
+| `AppelInstance`          | `InstanceCall`           |
+| `AppelStatique`          | `StaticCall`             |
+| `BrancheCondition`       | `ConditionalBranch`      |
+| `ExceptionLancee`        | `ThrownException`        |
+| `ExceptionCatchee`       | `CaughtException`        |
+| `MethodeAssignatrice`    | `AssigningMethod`        |
+| `Parametre`              | `Parameter`              |
+| `SignatureMethode`       | `MethodSignature`        |
+| `TypeResolu`             | `ResolvedType`           |
+| `Setter`                 | `Setter`                 |
+| `PlanInstanciation`      | `InstantiationPlan`      |
+
+### Constantes algorithmiques
+
+| STRATEGIE.md (FR)        | Kotlin (EN)              |
+|--------------------------|--------------------------|
+| `Mode` (enum)            | `ExtractionMode`         |
+| `CleVisite`              | `VisitKey`               |
+| `Budget`                 | `Budget`                 |
+| `HierarchieComplete`     | `fullHierarchy`          |
+| `ChampsActifs`           | `activeFields`           |
+| `AppelsInstance`         | `instanceCalls`          |
+| `AppelsStatiques`        | `staticCalls`            |
+| `Instanciations`         | `instantiations`         |
+| `Lambdas`                | `lambdas`                |
+| `BranchesCond`           | `conditionalBranches`    |
+| `ConstantesCmp`          | `comparisonConstants`    |
+| `SourcesIndéter`         | `nonDeterministicSources`|
+| `VariablesLocales`       | `localVariables`         |
+
+### Sous-types de InitStrategy (déjà en anglais dans STRATEGIE.md)
+
+`CONSTRUCTOR`, `IMPLICIT`, `IMPLICIT_VIA_CONSTRUCTOR`, `MOCKITO_INJECT_MOCKS`,
+`SETTER`, `CALL_POST_CONSTRUCT`, `CALL_PUBLIC`, `CALL_PUBLIC_WITH_STUBS`,
+`CALL_PUBLIC_WITH_ARGS`, `CALL_PUBLIC_TRANSITIVE`, `CALL_SAME_PACKAGE`,
+`UNTESTABLE_AS_IS` → conservés tels quels.
+
+### Règle d'application
+
+- Tout fichier `.kt` du `core/` utilise **exclusivement** les noms anglais ci-dessus
+- Tout commentaire de code peut utiliser les noms français pour référencer
+  une section de STRATEGIE.md (ex: `// Bloc 7 — voir STRATEGIE.md §4`)
+- Si un terme français manque dans cette table, l'ajouter ici **avant** de coder
 
 ---
 
@@ -219,14 +327,14 @@ interface. PSI n'apparaît **jamais** dans `core/`.
 
 ```kotlin
 interface CodeIntrospector {
-    fun resolveSymbolAt(file: SourceFile, offset: Int): Symbol?
-    fun findEnclosingMethod(symbol: Symbol): MethodSignature?
-    fun resolveClass(fqn: String): ClassDescriptor?
-    fun listMethodCalls(method: MethodSignature): List<MethodCall>
-    fun listFieldAccesses(method: MethodSignature): List<FieldAccess>
-    fun listSuperClasses(cls: ClassDescriptor): List<ClassDescriptor>
-    fun readMethodBody(method: MethodSignature): String
-    fun listAnnotations(target: AnnotatedTarget): List<AnnotationRef>
+   fun resolveSymbolAt(file: SourceFile, offset: Int): Symbol?
+   fun findEnclosingMethod(symbol: Symbol): MethodSignature?
+   fun resolveClass(fqn: String): ClassDescriptor?
+   fun listMethodCalls(method: MethodSignature): List<MethodCall>
+   fun listFieldAccesses(method: MethodSignature): List<FieldAccess>
+   fun listSuperClasses(cls: ClassDescriptor): List<ClassDescriptor>
+   fun readMethodBody(method: MethodSignature): String
+   fun listAnnotations(target: AnnotatedTarget): List<AnnotationRef>
 }
 ```
 
@@ -242,17 +350,17 @@ Pour les tests, tu écris un `FakeIntrospector` en mémoire — finis les
 
 ```kotlin
 interface ContextStrategy {
-    val id: String                   // "recursive-deep", "shallow", "git-diff"…
-    val displayName: String
-    val description: String
-    fun extract(input: StrategyInput): ContextTree
+   val id: String                   // "recursive-deep", "shallow", "git-diff"…
+   val displayName: String
+   val description: String
+   fun extract(input: StrategyInput): ContextTree
 }
 
 data class StrategyInput(
-    val introspector: CodeIntrospector,
-    val classifier: ClassClassifier,
-    val cursor: CursorLocation,
-    val config: StrategyConfig
+   val introspector: CodeIntrospector,
+   val classifier: ClassClassifier,
+   val cursor: CursorLocation,
+   val config: StrategyConfig
 )
 ```
 
@@ -300,23 +408,23 @@ Voici **le mix** qui prend le meilleur des 3 :
 
 ```kotlin
 interface PromptStage {
-    val id: String
-    fun apply(ctx: PromptContext): PromptContext
+   val id: String
+   fun apply(ctx: PromptContext): PromptContext
 }
 
 data class PromptContext(
-    val tree: ContextTree,
-    val layers: MutableMap<LayerKind, String> = mutableMapOf(),
-    val metaSlots: MutableMap<String, String> = mutableMapOf(),
-    var finalText: String? = null
+   val tree: ContextTree,
+   val layers: MutableMap<LayerKind, String> = mutableMapOf(),
+   val metaSlots: MutableMap<String, String> = mutableMapOf(),
+   var finalText: String? = null
 )
 
 class PromptBuilder(private val stages: List<PromptStage>) {
-    fun build(tree: ContextTree, cfg: PromptConfig): String {
-        var ctx = PromptContext(tree)
-        stages.forEach { ctx = it.apply(ctx) }
-        return ctx.finalText ?: error("Pipeline a oublié finalText")
-    }
+   fun build(tree: ContextTree, cfg: PromptConfig): String {
+      var ctx = PromptContext(tree)
+      stages.forEach { ctx = it.apply(ctx) }
+      return ctx.finalText ?: error("Pipeline a oublié finalText")
+   }
 }
 ```
 
@@ -356,13 +464,13 @@ custom de l'utilisateur).
 
 ```kotlin
 interface ConfigSource {
-    val priority: Int                            // bigger = override
-    fun load(): Map<String, Any>
+   val priority: Int                            // bigger = override
+   fun load(): Map<String, Any>
 }
 
 class LayeredConfig(private val sources: List<ConfigSource>) {
-    private val merged: Map<String, Any> by lazy { /* deep merge by priority */ }
-    fun <T> get(key: String, type: Class<T>): T?
+   private val merged: Map<String, Any> by lazy { /* deep merge by priority */ }
+   fun <T> get(key: String, type: Class<T>): T?
 }
 ```
 
@@ -376,21 +484,21 @@ Sources livrées :
 ```yaml
 strategy: recursive-deep
 templates:
-  dir: .ai/templates                # custom templates dir
-  default: deep-unit-test
+   dir: .ai/templates                # custom templates dir
+   default: deep-unit-test
 classification:
-  mockSuffixes: [Service, Repository, Gateway]
-  dataSuffixes: [DTO, Entity, Request, Response, Command]
+   mockSuffixes: [Service, Repository, Gateway]
+   dataSuffixes: [DTO, Entity, Request, Response, Command]
 llm:
-  provider: claude                  # or openai, ollama, none
-  model: claude-sonnet-4-6
-  temperature: 0.2
+   provider: claude                  # or openai, ollama, none
+   model: claude-sonnet-4-6
+   temperature: 0.2
 prompt:
-  layers:
-    role: partials/role-senior-tester
-    instructions: |
-      - Cas nominal + cas limites
-      - Vérifie les side-effects sur les champs
+   layers:
+      role: partials/role-senior-tester
+      instructions: |
+         - Cas nominal + cas limites
+         - Vérifie les side-effects sur les champs
 ```
 
 ---
@@ -399,24 +507,24 @@ prompt:
 
 ```kotlin
 interface LlmClient {
-    val id: String
-    suspend fun complete(req: PromptRequest): PromptResponse
+   val id: String
+   suspend fun complete(req: PromptRequest): PromptResponse
 }
 
 class GenerateTestAction : AnAction() {
-    override fun actionPerformed(e: AnActionEvent) {
-        val service = e.project!!.service<ContextExtractorService>()
-        val tree   = service.extract(e)
-        val prompt = service.buildPrompt(tree)
+   override fun actionPerformed(e: AnActionEvent) {
+      val service = e.project!!.service<ContextExtractorService>()
+      val tree   = service.extract(e)
+      val prompt = service.buildPrompt(tree)
 
-        when (val mode = service.config.outputMode) {
-            OutputMode.COPY     -> PromptCopyDialog(project, prompt).show()
-            OutputMode.LLM_CALL -> service.llm.complete(prompt) { response ->
-                                       service.writeTestFile(response, e)
-                                   }
-            OutputMode.ASK      -> showChoiceDialog(...)
-        }
-    }
+      when (val mode = service.config.outputMode) {
+         OutputMode.COPY     -> PromptCopyDialog(project, prompt).show()
+         OutputMode.LLM_CALL -> service.llm.complete(prompt) { response ->
+            service.writeTestFile(response, e)
+         }
+         OutputMode.ASK      -> showChoiceDialog(...)
+      }
+   }
 }
 ```
 

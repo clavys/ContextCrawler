@@ -232,23 +232,44 @@ et attends ma validation avant de passer à la suivante.**
 ### Étape 1 — Squelette `core/` (interfaces uniquement) + test-project
 Crée toutes les interfaces et data classes du `core/` :
 `ContextNode`, `ContextTree`, `NodeKind`, `CodeIntrospector`,
-`ContextStrategy`, `StrategyInput`, `StrategyRegistry`,
+`ContextStrategy`, `StrategyInput`, `StrategyRegistry`, `Budget`,
+`ClassClassifier`, `DefaultClassifier` (stub vide),
 `LlmClient`, `PromptRequest`, `PromptResponse`,
 `PromptStage`, `PromptContext`, `PromptBuilder`,
 `ConfigSource`, `LayeredConfig`, `ContextExtractorConfig`.
 **Pas d'implémentation PSI. Pas d'adapter. Pas d'IDE glue.**
 
+**Comportement attendu pour les classes "stub" à l'étape 1** :
+- `DefaultClassifier.classify()` → `throw NotImplementedError("Implemented at step 4")`
+- Toute autre classe avec corps de méthode non trivial → même pattern
+- L'objectif : la compilation passe, mais aucun appel runtime ne réussit
+
+**Nettoyage du projet existant** :
+- Supprimer `MyToolWindowFactory.kt` et `MyMessageBundle.kt` s'ils existent
+  (squelettes du wizard JetBrains qui ne suivent pas l'arborescence cible)
+
+**Convention de nommage** : utiliser exclusivement la table de traduction
+FR → EN définie dans **ARCHITECTURE.md §3bis**. Si un terme français
+de STRATEGIE.md n'y figure pas, l'ajouter à la table avant de coder.
+
 Crée également `test-project/` avec :
 - `build.gradle.kts` + `settings.gradle.kts` qui compilent sans erreur
-- Les dépendances minimum listées plus haut
-  (spring-context, jakarta.annotation, lombok, jakarta.persistence, spring-data-commons)
-- `case00_baseline/` — service @Autowired + 1 repo + 1 DTO (cas trivial)
-- `case91/` à `case95/` — toutes les classes pour les cas STRATEGIE §9.1-9.5
-  (DTOs, interfaces, super-classes, enums — autant que chaque cas l'exige)
-- `case96_degraded/` — au moins 1 fichier avec un import inexistant
-  pour valider la résilience (STRATEGIE §8bis)
+- Les dépendances minimum (spring-context, jakarta.annotation, lombok
+  avec annotationProcessor, jakarta.persistence, spring-data-commons)
+- `case00_baseline/` — service @Autowired + 1 repo + 1 DTO (3-4 classes)
+- `case91/` — @PostConstruct prioritaire (4-6 classes)
+- `case92/` — Méthode publique avec arguments (4-6 classes)
+- `case93/` — Chaîne transitive (6-8 classes — cas critique)
+- `case94/` — Auto-init dans methodeCible (3-5 classes)
+- `case95/` — UNTESTABLE_AS_IS (3-4 classes)
+- `case96_degraded/` — Cas dégradés §8bis (2-3 classes)
+  Le code doit COMPILER mais contenir des constructions limites pour PSI
+  (générique non bornable, référence circulaire entre 2 classes, etc.)
 - `EXPECTED_PROMPTS.md` avec les assertions binaires pour chaque cas
 - `README.md` qui explique comment lancer chaque cas manuellement
+
+**Règle qualitative pour chaque case** : au moins 1 DTO + 1 dépendance
+à mocker, sinon le test ne valide pas le pipeline complet.
 
 Ajoute aussi un test ArchUnit qui vérifie que `core/` n'importe jamais
 de classes `com.intellij..` :
