@@ -17,9 +17,23 @@
 
 ---
 
-## Langue du code
-Tout le code, commentaires, noms de classes, méthodes et variables
-doivent être en anglais. Les réponses peuvent être en français.
+## Convention de langue
+
+| Élément                                           | Langue   |
+|---------------------------------------------------|----------|
+| Code Kotlin (classes, méthodes, variables)        | Anglais  |
+| Fichiers (noms, packages)                         | Anglais  |
+| Commentaires inline dans le code Kotlin           | Français |
+| Code Java généré (classes, méthodes)              | Anglais  |
+| Commentaires dans les tests générés               | Français |
+| Specs (`.md`)                                     | Français |
+| Messages d'erreur visibles par l'utilisateur      | Français |
+| Logs techniques                                   | Anglais  |
+| Réponses de Claude Code dans le chat              | Français |
+
+Cette séparation découple la convention API (anglais, lisible par les outils
+et toute la communauté) du contenu éditorial (français, langue de travail).
+Le "quoi" est en anglais, le "pourquoi" est en français.
 
 ---
 
@@ -28,11 +42,19 @@ doivent être en anglais. Les réponses peuvent être en français.
 ```
 specs/ARCHITECTURE.md      → architecture hexagonale, modèle ContextTree,
                              couches, roadmap d'implémentation (section 12)
-specs/STRATEGIE.md         → algorithme complet de récupération de contexte,
-                             taxonomie des modes, pseudo-code par mode,
-                             APIs PSI clés, pièges, format du prompt de sortie
-specs/PROMPT_FORMAT.md     → structure exacte du prompt final envoyé au LLM,
-                             exemple complet, cas spéciaux, règles de rendu
+specs/STRATEGIE.md         → algorithme complet de récupération de contexte
+                             0bis : glossaire des termes
+                             2.1  : taxonomie des modes (Mode enum)
+                             3.x  : pseudo-code par mode
+                             4.x  : Bloc 7 — protocole d'init (avec diagramme 4.0)
+                             6    : format de rendu du ContextTree (layer CONTEXT)
+                             7    : APIs PSI clés et pièges
+                             8bis : gestion des cas dégradés
+                             9.x  : exemples concrets de référence
+specs/PROMPT_FORMAT.md     → wrapper LLM-agnostic du prompt final
+                             [SYSTEM][CONTEXT][USER_ENRICHMENT][CONSTRAINTS][INSTRUCTION]
+                             Templates par provider (Claude, Qwen, OpenAI)
+                             Cas spéciaux (UNTESTABLE_AS_IS, tronqué)
 ```
 
 **Règle absolue** : lis les trois fichiers intégralement avant d'écrire
@@ -82,51 +104,122 @@ et le prompt généré correspondent au comportement attendu décrit dans les sp
 
 ## Projet de test Java — auto-évaluation sur du vrai code
 
-Un mini projet Java est versionné dans `test-project/` à la racine du repo.
-Il représente exactement les 5 cas de `STRATEGIE.md` sections 9.1 à 9.5
-sous forme de vraies classes Java que le plugin analysera via PSI.
+Un mini projet Java versionné dans `test-project/` représente les cas de
+référence de `STRATEGIE.md` sous forme de vraies classes Java analysées
+via PSI.
+
+### Pré-requis : test-project doit compiler
+
+Le projet doit avoir son propre `build.gradle.kts` avec les dépendances
+nécessaires. **Sans ça, PSI ne résoudra aucun type et tous les tests
+échoueront silencieusement** — l'éditeur affichera des erreurs rouges
+partout et `findClass(fqn)` retournera systématiquement `null`.
 
 ### Structure
 ```
 test-project/
+├── build.gradle.kts                   ← OBLIGATOIRE
+├── settings.gradle.kts
+├── README.md                          ← comment lancer chaque cas manuellement
+├── EXPECTED_PROMPTS.md                ← oracle de validation (voir ci-dessous)
 └── src/main/java/com/testproject/
-    ├── case91/   → toutes les classes nécessaires pour @PostConstruct prioritaire
-    │              (service, dépendances, DTOs, interfaces...)
-    ├── case92/   → toutes les classes nécessaires pour méthode publique avec arguments
-    │              (service, repository, entités, DTOs, interfaces...)
-    ├── case93/   → toutes les classes nécessaires pour chaîne transitive
-    │              (plusieurs services enchaînés, DTOs, enums, interfaces...)
-    ├── case94/   → toutes les classes nécessaires pour auto-init dans la méthode cible
-    │              (service, dépendances lazy, DTOs...)
-    └── case95/   → toutes les classes nécessaires pour UNTESTABLE_AS_IS
-                   (dépendances statiques, constructeurs complexes, etc.)
+    ├── case00_baseline/               ← BASELINE : service @Autowired + 1 repo
+    │                                     valide le pipeline complet hors Bloc 7
+    ├── case91/                        ← @PostConstruct prioritaire (STRATEGIE §9.1)
+    ├── case92/                        ← Méthode publique avec arguments (§9.2)
+    ├── case93/                        ← Chaîne transitive (§9.3)
+    ├── case94/                        ← Auto-init dans methodeCible (§9.4)
+    ├── case95/                        ← UNTESTABLE_AS_IS (§9.5)
+    └── case96_degraded/               ← Cas dégradés (STRATEGIE §8bis)
+                                          imports cassés, types manquants, etc.
 ```
 
-Chaque package `caseXX/` doit être **réaliste** — inclure autant de classes
-(DTOs, interfaces, super-classes, enums, repositories) que nécessaire pour
-que la stratégie récursive ait un vrai graphe de dépendances à crawler.
+### Dépendances minimum dans `build.gradle.kts`
+
+```
+- org.springframework:spring-context              (pour @Service, @Repository...)
+- jakarta.annotation:jakarta.annotation-api       (pour @PostConstruct)
+- org.projectlombok:lombok                        (annotations Lombok)
+- jakarta.persistence:jakarta.persistence-api     (entités JPA)
+- org.springframework.data:spring-data-commons    (CrudRepository...)
+```
+
+Chaque package `caseXX/` doit être **réaliste** — inclure suffisamment de
+classes (DTOs, interfaces, super-classes, enums, repositories) pour que
+la stratégie récursive ait un vrai graphe de dépendances à crawler.
 Ne pas se limiter à une seule classe par cas.
 
-### Fichier EXPECTED_PROMPTS.md
-Crée `test-project/EXPECTED_PROMPTS.md` qui décrit pour chaque classe :
-- La méthode cible à analyser
-- Le `ContextTree` attendu (résumé)
-- Les sections clés attendues dans le prompt généré
+### Marquage de la méthode cible
 
-Ce fichier sert de référence pour comparer le prompt réel reçu de l'utilisateur.
+Chaque méthode à analyser doit être annotée par un commentaire :
+```java
+// @TestTarget
+public OrderDTO calculate(Long orderId) { ... }
+```
+Ce marqueur permet d'identifier sans ambiguïté la méthode à utiliser
+pour chaque cas, et facilitera l'automatisation future (V1.5).
+
+### Fichier EXPECTED_PROMPTS.md — format
+
+Crée `test-project/EXPECTED_PROMPTS.md` avec une entrée par cas suivant
+ce format **strict** :
+
+```markdown
+## case91 — @PostConstruct prioritaire
+
+**Méthode cible** : `OrderService#calculate(Long orderId)`
+
+**Assertions sur le ContextTree produit** :
+- [ ] `targetMethod.signature.nom == "calculate"`
+- [ ] `champs` contient `{nom: "cache", type: "DiscountCache"}`
+- [ ] `protocoleInit["cache"].strategieRecommandee` est `CALL_POST_CONSTRUCT`
+- [ ] `protocoleInit["cache"].strategieRecommandee.methode.nom == "init"`
+- [ ] `mocks` contient `DiscountRepository`
+- [ ] `mocks` ne contient PAS `DiscountCache` (auto-construit)
+
+**Assertions sur le prompt rendu (layer CONTEXT)** :
+- [ ] La section CONTEXT contient `## Champ \`cache\``
+- [ ] Cette section indique `Stratégie : CALL_POST_CONSTRUCT`
+- [ ] Le code suggéré contient `sut.init();`
+- [ ] La section `# Mocks` liste `DiscountRepository`
+- [ ] La section `# Mocks` ne liste PAS `DiscountCache`
+```
+
+Ces assertions sont des **cases à cocher binaires** — pas de comparaison
+textuelle. Si une assertion échoue, l'écart est explicite et reproductible.
 
 ### Workflow d'auto-évaluation aux étapes 7 et 8
 
-Quand le plugin est prêt à être testé sur du vrai code :
+#### Mode manuel (V1)
 1. Lance `./gradlew runIde`
 2. Dans le sandbox IntelliJ qui s'ouvre, ouvre `test-project/` comme projet Java
-3. **Demande à l'utilisateur** de placer le curseur dans la méthode cible
-   et de déclencher l'action (Alt+G), puis de coller le prompt généré dans le terminal
-4. Compare le prompt reçu avec `test-project/EXPECTED_PROMPTS.md`
-5. Identifie les écarts, corrige le code, relance `runIde`, itère
+3. **Vérifie que le projet compile sans erreur rouge dans l'éditeur**
+   (sinon PSI échouera silencieusement)
+4. Pour chaque cas (00, 91 → 96) :
+   a. Place le curseur sur la méthode marquée `// @TestTarget`
+   b. Déclenche l'action ContextCrawler (Alt+G)
+   c. Colle le prompt généré dans le terminal
+   d. Compare avec les assertions de `EXPECTED_PROMPTS.md` pour ce cas
+5. Coche les assertions validées, identifie les écarts
+6. Corrige le code du plugin, relance `runIde`, itère
 
-**Ne jamais passer à l'étape suivante sans avoir validé au moins les cas 9.2 et 9.3
-sur le vrai code Java de `test-project/`.**
+#### Critères de validation par étape
+
+- **Étape 7 — Mode COPY** : au moins `case00 + case92 + case93` doivent
+  passer **100%** de leurs assertions. Ce sont les 3 cas du chemin critique :
+    - `case00` valide le pipeline complet (extraction baseline)
+    - `case92` valide le Bloc 7 typique (méthode publique)
+    - `case93` valide le BFS transitif (cas le plus complexe)
+- **Étape 8 — Mode LLM_CALL** : tous les cas 91-95 doivent passer 80%
+  de leurs assertions. `case96_degraded` doit produire un message d'erreur
+  clair sans crasher le plugin.
+
+### Critère absolu
+
+**Ne jamais passer à l'étape suivante sans avoir validé `case00 + case92 + case93`
+sur le vrai code Java de `test-project/`.** Ces 3 cas couvrent le chemin
+critique du plugin et garantissent qu'aucune régression silencieuse n'est
+introduite.
 
 ---
 
@@ -145,17 +238,41 @@ Crée toutes les interfaces et data classes du `core/` :
 `ConfigSource`, `LayeredConfig`, `ContextExtractorConfig`.
 **Pas d'implémentation PSI. Pas d'adapter. Pas d'IDE glue.**
 
-Crée également :
-- Le `test-project/` avec toutes les classes Java nécessaires pour les cas 9.1 à 9.5
-  (DTOs, interfaces, super-classes, enums, repositories — autant que chaque cas l'exige)
-- `test-project/EXPECTED_PROMPTS.md` avec les prompts attendus pour chaque cas
-- Un test ArchUnit qui vérifie que `core/` n'importe jamais de classes `com.intellij..`
+Crée également `test-project/` avec :
+- `build.gradle.kts` + `settings.gradle.kts` qui compilent sans erreur
+- Les dépendances minimum listées plus haut
+  (spring-context, jakarta.annotation, lombok, jakarta.persistence, spring-data-commons)
+- `case00_baseline/` — service @Autowired + 1 repo + 1 DTO (cas trivial)
+- `case91/` à `case95/` — toutes les classes pour les cas STRATEGIE §9.1-9.5
+  (DTOs, interfaces, super-classes, enums — autant que chaque cas l'exige)
+- `case96_degraded/` — au moins 1 fichier avec un import inexistant
+  pour valider la résilience (STRATEGIE §8bis)
+- `EXPECTED_PROMPTS.md` avec les assertions binaires pour chaque cas
+- `README.md` qui explique comment lancer chaque cas manuellement
 
-Résultat attendu : `./gradlew compileKotlin` passe sans erreur.
+Ajoute aussi un test ArchUnit qui vérifie que `core/` n'importe jamais
+de classes `com.intellij..` :
+```kotlin
+@Test
+fun `core has no IntelliJ dependencies`() {
+    Classes.that().resideInAPackage("..core..")
+        .should().notDependOnClassesThat().resideInAPackage("com.intellij..")
+        .check(importedClasses)
+}
+```
+
+Résultat attendu :
+- `./gradlew compileKotlin` passe sans erreur
+- `./gradlew :test-project:compileJava` passe sans erreur (PSI pourra résoudre)
+- Le test ArchUnit passe
 
 ### Étape 2 — FakeIntrospector + tests unitaires `core/`
-Implémente `FakeIntrospector` et écris les tests JUnit 5 pour les
-5 cas des sections 9.1–9.5. Valide que le design du `core/` est testable.
+Implémente `FakeIntrospector` et écris les tests JUnit 5 pour :
+- `case00_baseline` (extraction baseline sans Bloc 7)
+- Les 5 cas des sections 9.1-9.5
+- Au moins 1 cas dégradé (type non résolvable de §8bis)
+
+Valide que le design du `core/` est testable sans PSI réel.
 Résultat attendu : `./gradlew test` passe, tous les tests verts.
 
 ### Étape 3 — Adapter PSI (`JavaPsiIntrospector`)
@@ -186,11 +303,15 @@ UI Settings minimale (juste les champs essentiels V1).
 Workflow de validation :
 1. `./gradlew runIde`
 2. Ouvre `test-project/` dans le sandbox
-3. Demande à l'utilisateur de tester chaque cas (9.1 à 9.5) et de coller le prompt généré
-4. Compare avec `test-project/EXPECTED_PROMPTS.md`
-5. Itère jusqu'à ce que les cas 9.2 et 9.3 soient conformes aux specs
+3. Vérifie que le projet compile sans erreur rouge dans l'éditeur
+4. Demande à l'utilisateur de tester chaque cas (00, 91 à 96)
+   et de coller le prompt généré
+5. Compare avec les **assertions binaires** de `test-project/EXPECTED_PROMPTS.md`
+6. Itère jusqu'à validation des cas critiques
 
-Résultat attendu : les prompts générés correspondent aux prompts attendus pour au moins 4 cas sur 5.
+Résultat attendu : `case00 + case92 + case93` passent **100%** de leurs
+assertions (chemin critique). Les autres cas sont au moins fonctionnels
+(le plugin ne crashe pas, le prompt produit a la bonne structure).
 
 ### Étape 8 — Mode LLM_CALL + Tool Window
 `GenerateTestAction`, `ContextPreviewToolWindow`.

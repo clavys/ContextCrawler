@@ -10,8 +10,8 @@
 1. **Hexagonal léger (ports & adapters)** — le cœur (`core/`) ne dépend
    *jamais* de PSI/IntelliJ. PSI vit uniquement dans `adapters/psi/`.
    Conséquence : tu testes la logique en pur JUnit, sans `IntelliJ TestCase`.
-2. **Un seul modèle de contexte** — fini la duplication
-   `RecursiveContextResult` + `GenericContextModel` + mapper. Un seul
+2. **Un seul modèle de contexte** — pas de duplication entre modèle d'extraction
+   et modèle de rendu, pas de mapper intermédiaire. Un seul
    `ContextTree` typé, navigable, extensible.
 3. **Strategy *vraiment* pluggable** — registre + extension point IntelliJ.
    Ajouter une stratégie = 1 classe + 1 entrée XML, zéro modif du cœur.
@@ -21,6 +21,15 @@
    versionné par projet, tout est mergeable.
 6. **Async + cancellable** — toute extraction tourne dans un
    `ReadAction.nonBlocking()` annulable, pour ne pas freezer l'IDE.
+7. **Convention de langue** — Code Kotlin **en anglais** (classes, méthodes,
+   variables, fichiers, packages). **Commentaires inline en français** —
+   le "quoi" est en anglais, le "pourquoi" est en français. Templates de
+   prompt et messages utilisateur en français. Logs techniques en anglais.
+   Les data classes et termes "métier" qui apparaissent en français dans
+   STRATEGIE.md (`ContexteResultat`, `methodeCible`, `champs`) sont du
+   pseudo-code de spec — l'implémentation Kotlin utilise les versions
+   anglaises (`ContextResult`, `targetMethod`, `fields`).
+   Voir CLAUDE.md "Convention de langue" pour le tableau complet.
 
 ---
 
@@ -143,7 +152,8 @@ com.contextextractor
 
 ## 4. Cœur du modèle : `ContextTree` unifié
 
-Remplace `RecursiveContextResult` **et** `GenericContextModel` :
+Modèle unique partagé entre toutes les stratégies d'extraction et tous
+les renderers de prompt :
 
 ```kotlin
 sealed interface ContextNode {
@@ -170,6 +180,32 @@ data class ContextTree(
     fun walk(): Sequence<ContextNode> = sequence { /* DFS */ }
 }
 ```
+
+> **Note importante — `NodeKind` vs `Mode`**
+>
+> `NodeKind` (ce fichier) et `Mode` (STRATEGIE.md §2.1) sont **deux concepts distincts** :
+>
+> - **`Mode`** est une **décision contextuelle** prise pendant la récursion :
+    >   "comment dois-je traiter ce type ici ?". Le même type peut être `MOCK_EXTERNAL`
+    >   à un endroit et `DATA_STRUCTURE` à un autre selon le contexte d'appel.
+>
+> - **`NodeKind`** est une **étiquette stable** d'un nœud dans l'arbre final :
+    >   "qu'est-ce que ce nœud représente ?". Une fois le nœud créé, son kind ne change plus.
+>
+> Mapping typique de `Mode` vers `NodeKind` :
+>
+> | Mode (extraction)   | NodeKind (rendu)              |
+> |---------------------|-------------------------------|
+> | `SUT_BOOTSTRAP`     | `TARGET_METHOD` + `FIELD`s    |
+> | `INTERNAL_LOGIC`    | `INTERNAL_METHOD`             |
+> | `MOCK_EXTERNAL`     | `MOCK`                        |
+> | `DATA_STRUCTURE`    | `DATA_STRUCTURE`              |
+> | `SYSTEM_IGNORE`     | (aucun nœud créé)             |
+> | `FUNCTIONAL_LAMBDA` | `MOCK` (avec metadata lambda) |
+> | `CONTAINER`         | `DATA_STRUCTURE`              |
+>
+> La conversion se fait dans `RecursiveDeepStrategy` au moment de la création
+> du nœud. C'est le seul endroit qui connaît les deux taxonomies.
 
 Avantage : tu n'as plus besoin du mapper. Le rendu Markdown se fait
 directement par un *visitor* sur l'arbre, branche par branche.
@@ -288,6 +324,11 @@ Ce design te permet :
 - **Réutiliser** des fragments via `{{>junit5-header}}` dans n'importe quel template
 - **Recomposer** un prompt en réordonnant les layers ou en ajoutant un stage
 - **Plug** un stage utilisateur (ex: `LengthGuardStage` qui tronque si > N tokens)
+
+> **Voir aussi** : la structure complète du prompt produit par ce pipeline
+> est définie dans **PROMPT_FORMAT.md** (sections SYSTEM, CONTEXT,
+> USER_ENRICHMENT, CONSTRAINTS, INSTRUCTION). Le rendu spécifique de la
+> layer CONTEXT est défini dans **STRATEGIE.md section 6**.
 
 ### Format des templates utilisateur
 
@@ -419,38 +460,26 @@ V1 : `ClaudeClient` + `OpenAiClient`. Clé API stockée via
 
 ---
 
-## 11. Migration depuis ton prototype
-
-| Existant                          | Devient                              | Action                        |
-|-----------------------------------|--------------------------------------|-------------------------------|
-| `RecursiveContextResult`          | `ContextTree` + nœuds typés          | Suppression du mapper         |
-| `GenericContextModel`             | idem                                 | Fusion                        |
-| `RecursiveContextResultMapper`    | Visitor de rendu Markdown            | Devient `ContextRenderStage`  |
-| `ContextStrategy` (inutilisée)    | Réellement implémentée + registry    | Hook avec extension point     |
-| `ContextSearcher`                 | `ContextExtractorService`            | Renommage + DI                |
-| `PsiScanner`                      | `JavaPsiIntrospector` (adapter)      | Refacto derrière l'interface  |
-| `ClassResolver`                   | méthode dans `JavaPsiIntrospector`   | Fusion                        |
-| `classify()` (×2)                 | `DefaultClassifier`                  | Une seule source de vérité    |
-| `UniversalPromptGenerator`        | `PromptBuilder` + `PromptStage`s     | Découpage en pipeline         |
-| `TemplateManager`                 | `ClasspathTemplateLoader` + cache    | Pas de singleton              |
-| `GetContextAction`                | `ExtractContextAction` slim          | Toute la logique → service    |
-| `System.err.println`              | `Logger` IntelliJ                    | Remplacement                  |
-
----
-
 ## 12. Roadmap suggérée (ordre d'implémentation)
 
 1. **Squelette `core/`** : modèle `ContextTree`, ports `CodeIntrospector`,
    `ContextStrategy`, `LlmClient`, `ConfigSource`. *Aucune dépendance IntelliJ.*
-2. **Tests unitaires `core/`** avec un `FakeIntrospector` — valide le design.
+   **+ test-project** : `build.gradle.kts` qui compile, `case00_baseline` +
+   `case91-95` + `case96_degraded` + `EXPECTED_PROMPTS.md`.
+2. **Tests unitaires `core/`** avec un `FakeIntrospector` — valide le design
+   sur `case00` (baseline) et au moins 1 cas dégradé (§8bis).
 3. **Adapter PSI** : `JavaPsiIntrospector` qui passe les tests d'intégration.
-4. **Stratégie récursive** portée vers la nouvelle interface (réutilise
-   ton algorithme actuel, mais dans le nouveau contrat).
-5. **Pipeline prompt** : `ContextRenderStage` + `LayerCompositionStage`
-   (pour égaler l'existant), puis `MetaPromptComposeStage` (vrai gain).
+4. **Stratégie récursive** : implémenter `RecursiveDeepStrategy` selon
+   l'algorithme de STRATEGIE.md §3. Doit gérer les cas dégradés de §8bis
+   sans crasher.
+5. **Pipeline prompt** : `ContextRenderStage` (rend la layer CONTEXT selon
+   STRATEGIE.md §6) + `LayerCompositionStage` (assemble le wrapper complet
+   selon PROMPT_FORMAT.md), puis `MetaPromptComposeStage` (vrai gain).
 6. **Settings IDE** + `.contextextractor.yml`.
-7. **Mode COPY** (égaler l'existant), puis **mode LLM_CALL** (Claude d'abord).
-8. **Tool window** : preview live du `ContextTree` + du prompt.
+7. **Mode COPY** : valider sur `case00 + case92 + case93` à 100% sur le
+   vrai code Java de `test-project/` avant de passer à l'étape 8.
+8. **Mode LLM_CALL** (`AnthropicApiClient` + `ClaudeCodeClient`) +
+   **Tool window** : preview live du `ContextTree` + du prompt.
 
 ---
 
