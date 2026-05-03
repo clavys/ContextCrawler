@@ -3,7 +3,9 @@
     "allow": [
       "Bash(\"C:/MesProjet/Kotlin/ContextCrawler/gradlew.bat\" compileKotlin --console=plain)",
       "Bash(\"C:/MesProjet/Kotlin/ContextCrawler/gradlew.bat\" :test-project:compileJava --console=plain)",
-      "Bash(\"C:/MesProjet/Kotlin/ContextCrawler/gradlew.bat\" test *)"
+      "Bash(\"C:/MesProjet/Kotlin/ContextCrawler/gradlew.bat\" test *)",
+      "Bash(./gradlew compileTestKotlin --console=plain)",
+      "Bash(./gradlew test *)"
     ]
   }
 }

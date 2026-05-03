@@ -1,0 +1,188 @@
+package com.contextextractor.fakes
+
+import com.contextextractor.core.extractor.AnnotatedTarget
+import com.contextextractor.core.extractor.AnnotationRef
+import com.contextextractor.core.extractor.ClassDescriptor
+import com.contextextractor.core.extractor.FieldAccess
+import com.contextextractor.core.extractor.MethodCall
+import com.contextextractor.core.extractor.MethodSignature
+import com.contextextractor.core.extractor.Parameter
+import com.contextextractor.core.extractor.ResolvedType
+
+// DSL fluent pour construire un FakeIntrospector. Pensé pour ressembler à
+// la lecture d'un fichier Java :
+//
+// fixture {
+//     klass("com.example.Service", annotations = listOf("Service")) {
+//         field("repo", T("com.example.Repo"))
+//         method("findOrder", returns = T("com.example.OrderDTO")) {
+//             param("ref", T("java.lang.String"))
+//             reads("com.example.Service", "repo")
+//             calls("com.example.Repo", "findById", "java.lang.Long")
+//         }
+//     }
+// }
+
+fun fixture(block: FixtureBuilder.() -> Unit): FakeIntrospector =
+    FixtureBuilder().apply(block).build()
+
+// Raccourci de construction d'un ResolvedType simple (pas de génériques).
+// Pour les types paramétrés voir [Tg] et [Wildcard].
+fun T(fqName: String, nullable: Boolean = false): ResolvedType =
+    ResolvedType(rawType = fqName.substringAfterLast('.'), fqName = fqName, nullable = nullable)
+
+// Raccourci type générique : Tg("java.util.List", T("Foo"))
+fun Tg(fqName: String, vararg args: ResolvedType): ResolvedType {
+    val raw = fqName.substringAfterLast('.')
+    val isCollection = fqName in COLLECTION_FQNS
+    val isContainer = fqName in CONTAINER_FQNS
+    return ResolvedType(
+        rawType = raw,
+        fqName = fqName,
+        typeArgs = args.toList(),
+        isCollection = isCollection,
+        isContainer = isContainer
+    )
+}
+
+// Wildcard ? — STRATEGIE.md §8bis.1 : doit être marqué isWildcard.
+val Wildcard: ResolvedType = ResolvedType(
+    rawType = "?",
+    fqName = "java.lang.Object",
+    isWildcard = true
+)
+
+private val COLLECTION_FQNS = setOf(
+    "java.util.List", "java.util.Set", "java.util.Collection", "java.lang.Iterable"
+)
+private val CONTAINER_FQNS = setOf("java.util.Map", "java.util.Optional")
+
+class FixtureBuilder {
+    private val fake = FakeIntrospector()
+
+    fun build(): FakeIntrospector = fake
+
+    fun klass(
+        fqn: String,
+        annotations: List<String> = emptyList(),
+        superFqn: String? = null,
+        interfaces: List<String> = emptyList(),
+        isAbstract: Boolean = false,
+        isInterface: Boolean = false,
+        isRecord: Boolean = false,
+        isEnum: Boolean = false,
+        visibility: String = "public",
+        block: ClassScope.() -> Unit = {}
+    ): ClassDescriptor {
+        val descriptor = ClassDescriptor(
+            fqn = fqn,
+            simpleName = fqn.substringAfterLast('.'),
+            superFqn = superFqn,
+            interfaces = interfaces,
+            isAbstract = isAbstract,
+            isInterface = isInterface,
+            isRecord = isRecord,
+            isEnum = isEnum,
+            annotations = annotations,
+            visibility = visibility,
+            packageName = fqn.substringBeforeLast('.', "")
+        )
+        fake.putClass(descriptor)
+        annotations.forEach {
+            fake.putAnnotation(AnnotatedTarget.OnClass(fqn), AnnotationRef(it))
+        }
+        ClassScope(fake, fqn).apply(block)
+        return descriptor
+    }
+
+    // Déclare une chaîne d'héritage classFqn -> superFqns (du plus proche au plus lointain).
+    fun superChain(classFqn: String, vararg superFqns: String) {
+        fake.putSuperChain(classFqn, superFqns.toList())
+    }
+}
+
+class ClassScope(
+    private val fake: FakeIntrospector,
+    val ownerFqn: String
+) {
+    fun field(
+        name: String,
+        type: ResolvedType,
+        annotations: List<String> = emptyList(),
+        visibility: String = "private"
+    ) {
+        fake.putField(ownerFqn, FakeField(name, type, annotations, visibility))
+        annotations.forEach {
+            fake.putAnnotation(AnnotatedTarget.OnField(ownerFqn, name), AnnotationRef(it))
+        }
+    }
+
+    fun method(
+        name: String,
+        returns: ResolvedType = T("void"),
+        annotations: List<String> = emptyList(),
+        visibility: String = "public",
+        declaredThrows: List<String> = emptyList(),
+        body: String = "",
+        block: MethodScope.() -> Unit = {}
+    ): MethodSignature {
+        val scope = MethodScope(fake, ownerFqn, name, returns, annotations, visibility, declaredThrows, body)
+        scope.block()
+        val signature = scope.toSignature()
+        fake.putMethod(ownerFqn, signature, body)
+        annotations.forEach {
+            fake.putAnnotation(
+                AnnotatedTarget.OnMethod(ownerFqn, signature.canonical()),
+                AnnotationRef(it)
+            )
+        }
+        scope.commit(signature)
+        return signature
+    }
+}
+
+class MethodScope(
+    private val fake: FakeIntrospector,
+    private val ownerFqn: String,
+    private val name: String,
+    private val returns: ResolvedType,
+    private val annotations: List<String>,
+    private val visibility: String,
+    private val declaredThrows: List<String>,
+    private val body: String
+) {
+    private val params = mutableListOf<Parameter>()
+    private val pendingCalls = mutableListOf<MethodCall>()
+    private val pendingAccesses = mutableListOf<FieldAccess>()
+
+    fun param(name: String, type: ResolvedType, annotations: List<String> = emptyList()) {
+        params.add(Parameter(name, type, annotations))
+    }
+
+    fun calls(targetType: String, methodName: String, vararg argTypes: String, isStatic: Boolean = false) {
+        pendingCalls.add(MethodCall(targetType, methodName, argTypes.toList(), isStatic))
+    }
+
+    fun reads(ownerType: String, fieldName: String) {
+        pendingAccesses.add(FieldAccess(ownerType, fieldName, write = false))
+    }
+
+    fun writes(ownerType: String, fieldName: String) {
+        pendingAccesses.add(FieldAccess(ownerType, fieldName, write = true))
+    }
+
+    fun toSignature(): MethodSignature = MethodSignature(
+        name = name,
+        returnType = returns,
+        parameters = params.toList(),
+        annotations = annotations,
+        declaredThrows = declaredThrows,
+        visibility = visibility
+    )
+
+    // Persiste les calls/accesses une fois la signature définitivement créée.
+    fun commit(signature: MethodSignature) {
+        pendingCalls.forEach { fake.putCall(signature, it) }
+        pendingAccesses.forEach { fake.putFieldAccess(signature, it) }
+    }
+}
