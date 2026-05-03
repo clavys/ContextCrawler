@@ -23,12 +23,22 @@ repositories {
 dependencies {
     intellijPlatform {
         intellijIdea(providers.gradleProperty("platformVersion"))
-        testFramework(org.jetbrains.intellij.platform.gradle.TestFrameworkType.Platform)
+        // testFramework(Platform) sera ajouté à l'étape 3 quand le sandbox
+        // IntelliJ deviendra nécessaire pour tester JavaPsiIntrospector.
 
         // Add plugin dependencies for compilation here:
         bundledPlugin("com.intellij.java")
         bundledPlugin("org.jetbrains.kotlin")
     }
+
+    // Tests pur Kotlin (core/) — pas de IntelliJ TestCase requis à l'étape 1-2.
+    testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
+    testImplementation("com.tngtech.archunit:archunit-junit5:1.3.0")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+}
+
+tasks.test {
+    useJUnitPlatform()
 }
 
 intellijPlatform {
