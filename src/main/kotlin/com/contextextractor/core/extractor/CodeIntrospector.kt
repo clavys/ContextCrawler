@@ -15,6 +15,11 @@ interface CodeIntrospector {
 
     fun listFieldAccesses(method: MethodSignature): List<FieldAccess>
 
+    // Champs déclarés directement sur cette classe — la stratégie remonte la
+    // hiérarchie via listSuperClasses() pour collecter tous les champs visibles
+    // (STRATEGIE.md §3.1 BLOC 1 « Champs de la SUT et héritage »).
+    fun listFields(cls: ClassDescriptor): List<ClassField>
+
     fun listSuperClasses(cls: ClassDescriptor): List<ClassDescriptor>
 
     fun readMethodBody(method: MethodSignature): String

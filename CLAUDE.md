@@ -300,7 +300,50 @@ Résultat attendu : `./gradlew test` passe, tous les tests verts.
 Implémente `JavaPsiIntrospector` qui satisfait l'interface `CodeIntrospector`.
 Utilise uniquement les APIs PSI listées dans `STRATEGIE.md` section 7.1.
 Respecte les pièges section 7.2 (toujours `getCanonicalText()`, ReadAction, etc.).
-Résultat attendu : tests d'intégration PSI passent.
+
+**Prérequis ajouté à l'étape 3** :
+Ajouter `listFields(cls: ClassDescriptor): List<ClassField>` au port
+`CodeIntrospector` avant l'implémentation PSI. `ClassField` porte au minimum
+`name, type, visibility, annotations, declaredIn`. La méthode est requise par
+STRATEGIE.md §3.1 BLOC 1 (« Champs de la SUT et héritage ») dès l'étape 4 ;
+ajouter au port maintenant évite un refactor de FakeIntrospector + adapter PSI
+plus tard.
+
+**Séparation test / integrationTest** :
+- `src/test/kotlin/` — JUnit 5 pur, pas de classes IntelliJ TestCase. Source
+  set standard `test`, lancé par `./gradlew test`.
+- `src/integrationTest/kotlin/` — JUnit 4 + IntelliJ TestCase. Source set custom
+  `integrationTest` avec `testFramework(Platform)` ajouté via le paramètre
+  `configurationName = "integrationTestImplementation"`. Lancé par
+  `./gradlew integrationTest`.
+- Raison de la séparation : `testFramework(Platform)` embarque un
+  `LauncherSessionListener` (`com.intellij.tests.JUnit5TestSessionListener`)
+  qui plante au démarrage du launcher JUnit 5 — donc on l'isole du source
+  set qui utilise `useJUnitPlatform()`.
+
+**Limite connue de l'étape 3** :
+Les classes IntelliJ test framework du bundle IDE (`testFramework.jar` qui
+porte `LightJavaCodeInsightFixtureTestCase`) sont injectées via des transforms
+d'artefact attachées au source set `test` standard. Ces transforms ne se
+propagent pas à un source set custom via `compileClasspath += sourceSets["test"].compileClasspath`
+ni via `extendsFrom(testCompileOnly)`. L'API publique du plugin v2 ne semble
+pas exposer de `configurationName` sur `intellijIdea(...)` / `bundledPlugin(...)`,
+donc impossible de cibler `integrationTestImplementation` directement.
+
+→ Le wiring complet est reporté à une session dédiée. En attendant, la
+validation de `JavaPsiIntrospector` se fait manuellement via `./gradlew runIde`
+sur `test-project/` (workflow déjà documenté dans `test-project/README.md`).
+Les tests prévus (`resolveClass`, `listFields`, `listSuperClasses`,
+`listAnnotations`, mapping wildcards) sont décrits en pseudo-code dans
+`src/integrationTest/kotlin/com/contextextractor/adapters/psi/JavaPsiIntrospectorTest.kt`,
+prêts à transposer dès le wiring résolu.
+
+Résultat attendu :
+- `./gradlew compileKotlin` passe (adapter PSI compile).
+- `./gradlew test` passe (les 42 tests fakes + ArchUnit migrés vers le
+  nouveau port avec `listFields()` restent verts).
+- `./gradlew integrationTest` passe (stub minimal qui valide la
+  compilation du source set integrationTest et l'accès à PsiTypeMapper).
 
 ### Étape 4 — Stratégie récursive
 Porte l'algorithme de `STRATEGIE.md` vers `RecursiveDeepStrategy`.

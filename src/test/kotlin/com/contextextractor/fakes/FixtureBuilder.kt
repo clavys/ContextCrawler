@@ -3,6 +3,7 @@ package com.contextextractor.fakes
 import com.contextextractor.core.extractor.AnnotatedTarget
 import com.contextextractor.core.extractor.AnnotationRef
 import com.contextextractor.core.extractor.ClassDescriptor
+import com.contextextractor.core.extractor.ClassField
 import com.contextextractor.core.extractor.FieldAccess
 import com.contextextractor.core.extractor.MethodCall
 import com.contextextractor.core.extractor.MethodSignature
@@ -109,9 +110,19 @@ class ClassScope(
         name: String,
         type: ResolvedType,
         annotations: List<String> = emptyList(),
-        visibility: String = "private"
+        visibility: String = "private",
+        declaredIn: String = ownerFqn
     ) {
-        fake.putField(ownerFqn, FakeField(name, type, annotations, visibility))
+        fake.putField(
+            ownerFqn,
+            ClassField(
+                name = name,
+                type = type,
+                visibility = visibility,
+                annotations = annotations,
+                declaredIn = declaredIn
+            )
+        )
         annotations.forEach {
             fake.putAnnotation(AnnotatedTarget.OnField(ownerFqn, name), AnnotationRef(it))
         }

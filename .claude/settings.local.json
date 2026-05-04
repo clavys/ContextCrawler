@@ -5,7 +5,17 @@
       "Bash(\"C:/MesProjet/Kotlin/ContextCrawler/gradlew.bat\" :test-project:compileJava --console=plain)",
       "Bash(\"C:/MesProjet/Kotlin/ContextCrawler/gradlew.bat\" test *)",
       "Bash(./gradlew compileTestKotlin --console=plain)",
-      "Bash(./gradlew test *)"
+      "Bash(./gradlew test *)",
+      "Bash(./gradlew compileKotlin --console=plain)",
+      "Bash(./gradlew help *)",
+      "Bash(./gradlew compileIntegrationTestKotlin --console=plain)",
+      "Bash(./gradlew integrationTest --console=plain)",
+      "Bash(./gradlew clean *)",
+      "Bash(./gradlew dependencies *)",
+      "Bash(unzip -l \"/c/Users/reppe/.gradle/caches/modules-2/files-2.1/com.jetbrains.intellij.platform/test-framework/261.23567.138/907b0402f43f23157eac9931ee6ceec60e689190/test-framework-261.23567.138.jar\")",
+      "Bash(xargs -I {} unzip -l {})",
+      "Bash(./gradlew checkIntegrationTestCp --console=plain)",
+      "Bash(./gradlew checkIntegrationTestCp --no-configuration-cache --console=plain)"
     ]
   }
 }

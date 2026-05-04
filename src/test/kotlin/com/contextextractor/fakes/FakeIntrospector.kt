@@ -3,27 +3,16 @@ package com.contextextractor.fakes
 import com.contextextractor.core.extractor.AnnotatedTarget
 import com.contextextractor.core.extractor.AnnotationRef
 import com.contextextractor.core.extractor.ClassDescriptor
+import com.contextextractor.core.extractor.ClassField
 import com.contextextractor.core.extractor.CodeIntrospector
 import com.contextextractor.core.extractor.FieldAccess
 import com.contextextractor.core.extractor.MethodCall
 import com.contextextractor.core.extractor.MethodSignature
-import com.contextextractor.core.extractor.ResolvedType
 import com.contextextractor.core.extractor.SourceFile
 import com.contextextractor.core.extractor.Symbol
 
-// Champ déclaré sur une classe — données utilisées par les tests fixtures
-// (FakeField n'est pas exposé par le port `CodeIntrospector`, c'est une
-// donnée d'oracle pour vérifier que les fixtures représentent les classes
-// fidèlement. Le port pourrait gagner un `listFields(cls)` à l'étape 4.)
-data class FakeField(
-    val name: String,
-    val type: ResolvedType,
-    val annotations: List<String> = emptyList(),
-    val visibility: String = "private"
-)
-
 // Implémentation in-memory du port CodeIntrospector — utilisée par les tests
-// de l'étape 2. Aucune dépendance PSI ; chaque scénario est construit via le
+// de l'étape 2+. Aucune dépendance PSI ; chaque scénario est construit via le
 // DSL `fixture { ... }` défini dans FixtureBuilder.kt.
 class FakeIntrospector : CodeIntrospector {
 
@@ -37,7 +26,7 @@ class FakeIntrospector : CodeIntrospector {
     private val symbolsByLocation = mutableMapOf<Pair<String, Int>, Symbol>()
     private val enclosingMethodBySymbol = mutableMapOf<String, MethodSignature>()
     private val superFqnChains = mutableMapOf<String, List<String>>()
-    private val fieldsByOwner = mutableMapOf<String, MutableList<FakeField>>()
+    private val fieldsByOwner = mutableMapOf<String, MutableList<ClassField>>()
 
     // -- Implémentation du port -----------------------------------------------
 
@@ -54,6 +43,9 @@ class FakeIntrospector : CodeIntrospector {
 
     override fun listFieldAccesses(method: MethodSignature): List<FieldAccess> =
         accessesByMethod[method].orEmpty()
+
+    override fun listFields(cls: ClassDescriptor): List<ClassField> =
+        fieldsByOwner[cls.fqn].orEmpty()
 
     override fun listSuperClasses(cls: ClassDescriptor): List<ClassDescriptor> =
         superFqnChains[cls.fqn].orEmpty().mapNotNull { classes[it] }
@@ -100,15 +92,13 @@ class FakeIntrospector : CodeIntrospector {
         superFqnChains[classFqn] = superFqns
     }
 
-    internal fun putField(ownerFqn: String, field: FakeField) {
+    internal fun putField(ownerFqn: String, field: ClassField) {
         fieldsByOwner.getOrPut(ownerFqn) { mutableListOf() }.add(field)
     }
 
     // -- Helpers d'oracle pour les tests --------------------------------------
-    // (hors port — utiles pour assertions sans s'appuyer sur listFieldAccesses)
-
-    fun listFieldsOf(ownerFqn: String): List<FakeField> =
-        fieldsByOwner[ownerFqn].orEmpty()
+    // Ces helpers ne font pas partie du port — ils exposent des indices
+    // utilisés uniquement par les tests des fixtures.
 
     fun listMethodsOf(ownerFqn: String): List<MethodSignature> =
         methodsByOwner[ownerFqn].orEmpty()
