@@ -14,8 +14,25 @@ data class ContextTree(
 
     fun ofKind(kind: NodeKind): List<ContextNode> = byKind[kind].orEmpty()
 
+    // DFS pré-ordre itératif : root puis descendance. Utile aux renderers qui
+    // veulent visiter chaque nœud sans recourir à `byKind` (utilité quand
+    // l'ordre structurel doit être préservé — ex : empiler les FIELDs dans
+    // l'ordre de découverte plutôt que groupés par stratégie).
+    //
+    // Implémentation itérative car `sequence { … }` n'autorise pas de récursion
+    // directe via fonctions imbriquées (SequenceScope.yield est `suspend` mais
+    // on ne peut pas définir de `suspend fun` locale dans le builder).
     fun walk(): Sequence<ContextNode> = sequence {
-        // Parcours DFS — implémentation à l'étape 4 quand le modèle sera peuplé.
-        throw NotImplementedError("Implemented at step 4")
+        val stack = ArrayDeque<ContextNode>()
+        stack.addFirst(root)
+        while (stack.isNotEmpty()) {
+            val node = stack.removeFirst()
+            yield(node)
+            // Pousse en ordre inverse pour que les enfants sortent dans l'ordre
+            // déclaratif (head-first DFS).
+            for (i in node.children.indices.reversed()) {
+                stack.addFirst(node.children[i])
+            }
+        }
     }
 }

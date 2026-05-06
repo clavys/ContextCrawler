@@ -5,6 +5,7 @@ import com.contextextractor.core.extractor.AnnotationRef
 import com.contextextractor.core.extractor.ClassDescriptor
 import com.contextextractor.core.extractor.ClassField
 import com.contextextractor.core.extractor.FieldAccess
+import com.contextextractor.core.extractor.FieldAssignment
 import com.contextextractor.core.extractor.MethodCall
 import com.contextextractor.core.extractor.MethodSignature
 import com.contextextractor.core.extractor.Parameter
@@ -71,8 +72,11 @@ class FixtureBuilder {
         isAbstract: Boolean = false,
         isInterface: Boolean = false,
         isRecord: Boolean = false,
+        isSealed: Boolean = false,
         isEnum: Boolean = false,
         visibility: String = "public",
+        permittedSubclasses: List<String> = emptyList(),
+        enumValues: List<String> = emptyList(),
         block: ClassScope.() -> Unit = {}
     ): ClassDescriptor {
         val descriptor = ClassDescriptor(
@@ -83,10 +87,13 @@ class FixtureBuilder {
             isAbstract = isAbstract,
             isInterface = isInterface,
             isRecord = isRecord,
+            isSealed = isSealed,
             isEnum = isEnum,
             annotations = annotations,
             visibility = visibility,
-            packageName = fqn.substringBeforeLast('.', "")
+            packageName = fqn.substringBeforeLast('.', ""),
+            permittedSubclasses = permittedSubclasses,
+            enumValues = enumValues
         )
         fake.putClass(descriptor)
         annotations.forEach {
@@ -111,7 +118,9 @@ class ClassScope(
         type: ResolvedType,
         annotations: List<String> = emptyList(),
         visibility: String = "private",
-        declaredIn: String = ownerFqn
+        declaredIn: String = ownerFqn,
+        isFinal: Boolean = false,
+        initializerExpression: String? = null
     ) {
         fake.putField(
             ownerFqn,
@@ -120,7 +129,9 @@ class ClassScope(
                 type = type,
                 visibility = visibility,
                 annotations = annotations,
-                declaredIn = declaredIn
+                declaredIn = declaredIn,
+                isFinal = isFinal,
+                initializerExpression = initializerExpression
             )
         )
         annotations.forEach {
@@ -134,10 +145,11 @@ class ClassScope(
         annotations: List<String> = emptyList(),
         visibility: String = "public",
         declaredThrows: List<String> = emptyList(),
+        isStatic: Boolean = false,
         body: String = "",
         block: MethodScope.() -> Unit = {}
     ): MethodSignature {
-        val scope = MethodScope(fake, ownerFqn, name, returns, annotations, visibility, declaredThrows, body)
+        val scope = MethodScope(fake, ownerFqn, name, returns, annotations, visibility, declaredThrows, isStatic, body)
         scope.block()
         val signature = scope.toSignature()
         fake.putMethod(ownerFqn, signature, body)
@@ -160,11 +172,13 @@ class MethodScope(
     private val annotations: List<String>,
     private val visibility: String,
     private val declaredThrows: List<String>,
+    private val isStatic: Boolean,
     private val body: String
 ) {
     private val params = mutableListOf<Parameter>()
     private val pendingCalls = mutableListOf<MethodCall>()
     private val pendingAccesses = mutableListOf<FieldAccess>()
+    private val pendingAssignments = mutableListOf<FieldAssignment>()
 
     fun param(name: String, type: ResolvedType, annotations: List<String> = emptyList()) {
         params.add(Parameter(name, type, annotations))
@@ -182,18 +196,49 @@ class MethodScope(
         pendingAccesses.add(FieldAccess(ownerType, fieldName, write = true))
     }
 
+    // Enregistre à la fois une FieldAccess(write=true) et une FieldAssignment.
+    // Les deux ports doivent être cohérents : §4.5 stratégie 10 vérifie l'ordre
+    // relatif d'une lecture vs assignation, et listFieldAccesses doit voir
+    // l'écriture au même offset que l'assignation correspondante. Les fixtures
+    // existantes utilisaient `writes(...)` ; le nouveau verbe `assigns(...)`
+    // est pour les tests BLOC 7 qui ont besoin du contexte enrichi.
+    fun assigns(
+        ownerType: String,
+        fieldName: String,
+        rhsExpression: String = "",
+        rhsType: ResolvedType? = null,
+        isConditional: Boolean = false,
+        conditionIsNullCheck: Boolean = false
+    ) {
+        pendingAccesses.add(FieldAccess(ownerType, fieldName, write = true))
+        pendingAssignments.add(
+            FieldAssignment(
+                ownerType = ownerType,
+                fieldName = fieldName,
+                rhsExpression = rhsExpression,
+                rhsType = rhsType,
+                isConditional = isConditional,
+                conditionIsNullCheck = conditionIsNullCheck
+            )
+        )
+    }
+
     fun toSignature(): MethodSignature = MethodSignature(
         name = name,
         returnType = returns,
         parameters = params.toList(),
         annotations = annotations,
         declaredThrows = declaredThrows,
-        visibility = visibility
+        visibility = visibility,
+        isStatic = isStatic
     )
 
-    // Persiste les calls/accesses une fois la signature définitivement créée.
+    // Persiste les calls/accesses/assignments une fois la signature définitivement
+    // créée. L'ordre d'insertion est conservé — c'est lui qui simule l'ordre
+    // source garanti par le port CodeIntrospector (§4.5).
     fun commit(signature: MethodSignature) {
         pendingCalls.forEach { fake.putCall(signature, it) }
         pendingAccesses.forEach { fake.putFieldAccess(signature, it) }
+        pendingAssignments.forEach { fake.putFieldAssignment(signature, it) }
     }
 }

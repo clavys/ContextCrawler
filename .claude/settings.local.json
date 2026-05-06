@@ -15,7 +15,17 @@
       "Bash(unzip -l \"/c/Users/reppe/.gradle/caches/modules-2/files-2.1/com.jetbrains.intellij.platform/test-framework/261.23567.138/907b0402f43f23157eac9931ee6ceec60e689190/test-framework-261.23567.138.jar\")",
       "Bash(xargs -I {} unzip -l {})",
       "Bash(./gradlew checkIntegrationTestCp --console=plain)",
-      "Bash(./gradlew checkIntegrationTestCp --no-configuration-cache --console=plain)"
+      "Bash(./gradlew checkIntegrationTestCp --no-configuration-cache --console=plain)",
+      "Bash(./gradlew integrationTest)",
+      "Bash(./gradlew compileKotlin compileTestKotlin)",
+      "Bash(./gradlew compileKotlin)",
+      "Bash(./gradlew compileTestKotlin)",
+      "Bash(xargs grep -l \"NoSuchMethodError\")",
+      "Bash(./gradlew --stop)",
+      "Bash(xargs grep -hE \"testsuite name=|tests=\\\\\"\")",
+      "Bash(xargs grep -hE \"testsuite name=\")",
+      "Bash(git mv *)",
+      "Bash(./gradlew compileTestKotlin --rerun-tasks)"
     ]
   }
 }

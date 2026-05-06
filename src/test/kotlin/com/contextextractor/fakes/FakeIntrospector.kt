@@ -6,6 +6,7 @@ import com.contextextractor.core.extractor.ClassDescriptor
 import com.contextextractor.core.extractor.ClassField
 import com.contextextractor.core.extractor.CodeIntrospector
 import com.contextextractor.core.extractor.FieldAccess
+import com.contextextractor.core.extractor.FieldAssignment
 import com.contextextractor.core.extractor.MethodCall
 import com.contextextractor.core.extractor.MethodSignature
 import com.contextextractor.core.extractor.SourceFile
@@ -22,6 +23,7 @@ class FakeIntrospector : CodeIntrospector {
     private val bodies = mutableMapOf<MethodSignature, String>()
     private val callsByMethod = mutableMapOf<MethodSignature, MutableList<MethodCall>>()
     private val accessesByMethod = mutableMapOf<MethodSignature, MutableList<FieldAccess>>()
+    private val assignmentsByMethod = mutableMapOf<MethodSignature, MutableList<FieldAssignment>>()
     private val annotationsByTarget = mutableMapOf<AnnotatedTarget, MutableList<AnnotationRef>>()
     private val symbolsByLocation = mutableMapOf<Pair<String, Int>, Symbol>()
     private val enclosingMethodBySymbol = mutableMapOf<String, MethodSignature>()
@@ -44,8 +46,14 @@ class FakeIntrospector : CodeIntrospector {
     override fun listFieldAccesses(method: MethodSignature): List<FieldAccess> =
         accessesByMethod[method].orEmpty()
 
+    override fun listFieldAssignments(method: MethodSignature): List<FieldAssignment> =
+        assignmentsByMethod[method].orEmpty()
+
     override fun listFields(cls: ClassDescriptor): List<ClassField> =
         fieldsByOwner[cls.fqn].orEmpty()
+
+    override fun listMethods(cls: ClassDescriptor): List<MethodSignature> =
+        methodsByOwner[cls.fqn].orEmpty()
 
     override fun listSuperClasses(cls: ClassDescriptor): List<ClassDescriptor> =
         superFqnChains[cls.fqn].orEmpty().mapNotNull { classes[it] }
@@ -76,6 +84,10 @@ class FakeIntrospector : CodeIntrospector {
         accessesByMethod.getOrPut(from) { mutableListOf() }.add(access)
     }
 
+    internal fun putFieldAssignment(from: MethodSignature, assignment: FieldAssignment) {
+        assignmentsByMethod.getOrPut(from) { mutableListOf() }.add(assignment)
+    }
+
     internal fun putAnnotation(target: AnnotatedTarget, annotation: AnnotationRef) {
         annotationsByTarget.getOrPut(target) { mutableListOf() }.add(annotation)
     }
@@ -97,11 +109,9 @@ class FakeIntrospector : CodeIntrospector {
     }
 
     // -- Helpers d'oracle pour les tests --------------------------------------
-    // Ces helpers ne font pas partie du port — ils exposent des indices
-    // utilisés uniquement par les tests des fixtures.
-
-    fun listMethodsOf(ownerFqn: String): List<MethodSignature> =
-        methodsByOwner[ownerFqn].orEmpty()
+    // listMethodsOf / listFieldsOf passent désormais par le port
+    // (voir TestExtensions.kt). Ce qui reste ici est ce qui n'est PAS exposé
+    // par CodeIntrospector — purement pour assertions sur l'index inverse.
 
     fun ownerOf(method: MethodSignature): String? = ownerByMethod[method]
 }

@@ -149,7 +149,10 @@ object Fixtures {
                 """.trimIndent()
             ) {
                 reads("$pkg.OrderService", "repository")
-                writes("$pkg.OrderService", "cache")
+                // BLOC 7 a besoin d'un FieldAssignment (pas seulement d'un
+                // FieldAccess write=true) pour que SourceCollector détecte
+                // primeCache comme MethodInitializer du champ `cache`.
+                assigns("$pkg.OrderService", "cache", rhsExpression = "c")
                 calls("$pkg.DiscountRepository", "findAllActive")
                 calls("$pkg.DiscountCache", "warm", "java.util.List")
             }
