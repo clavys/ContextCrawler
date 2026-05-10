@@ -14,7 +14,40 @@
 
     <!-- Actions, services, settings, tool window: ajoutés étape par étape (6→8). -->
 
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- Settings persistantes (étape 6-γ) — application-level pour rester
+             accessible depuis n'importe quel projet. -->
+        <applicationService
+            serviceImplementation="com.contextextractor.adapters.ide.ContextCrawlerSettings"/>
+
+        <!-- Settings UI panel : Settings -> Tools -> ContextCrawler. -->
+        <applicationConfigurable
+            parentId="tools"
+            id="com.contextextractor.settings"
+            displayName="ContextCrawler"
+            instance="com.contextextractor.ide.settings.ContextCrawlerConfigurable"/>
+
+        <!-- Service d'extraction — étape 7. Project-level pour partager le
+             cycle de vie avec le projet ouvert. -->
+        <projectService
+            serviceImplementation="com.contextextractor.ide.service.ContextExtractorService"/>
+    </extensions>
+
     <extensions defaultExtensionNs="org.jetbrains.kotlin">
         <supportsKotlinPluginMode supportsK2="true"/>
     </extensions>
+
+    <!-- Action principale — étape 7 (mode COPY). Tools menu + raccourci Alt+G.
+         Mappée aussi dans le contexte de l'éditeur (clic droit). -->
+    <actions>
+        <action
+            id="com.contextextractor.ExtractContextAction"
+            class="com.contextextractor.ide.action.ExtractContextAction"
+            text="Extract Method Context (ContextCrawler)"
+            description="Analyzes the method under cursor and generates an LLM prompt for a JUnit 5 test.">
+            <keyboard-shortcut keymap="$default" first-keystroke="alt G"/>
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
+    </actions>
 </idea-plugin>

@@ -192,6 +192,19 @@ class MethodScope(
         pendingAccesses.add(FieldAccess(ownerType, fieldName, write = false))
     }
 
+    // ⚠️ FOOTGUN — N'UTILISE PAS POUR LES TESTS BLOC 7. Utilise `assigns(...)`.
+    //
+    // `writes()` n'enregistre QUE FieldAccess(write=true). Il NE peuple PAS
+    // listFieldAssignments — donc SourceCollector ne voit aucune assignation
+    // et le champ tombe en UNTESTABLE_AS_IS branche 11 (faux négatif silencieux).
+    //
+    // Garde uniquement pour les tests BLOC 1-6 (résolution de classes, mocks,
+    // DTO, internalLogics) qui ne dépendent pas du contenu d'assignation.
+    // Tout test qui exerce BLOC 7 ou le pipeline complet (PromptBuilder) doit
+    // passer par `assigns(ownerType, fieldName, rhsExpression = "...")`.
+    //
+    // Historique : régressions corrigées en 4e-ζ (case91) puis en 5-β (case92,
+    // case93, case94, case95) — d'où l'avertissement bien visible ici.
     fun writes(ownerType: String, fieldName: String) {
         pendingAccesses.add(FieldAccess(ownerType, fieldName, write = true))
     }

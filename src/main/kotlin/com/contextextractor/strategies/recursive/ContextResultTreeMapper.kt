@@ -83,9 +83,18 @@ class ContextResultTreeMapper {
             },
             MetaKeys.TESTABILITY to result.testabilityDiagnostic.testable.toString()
         )
-        if (result.testabilityDiagnostic.blockingFields.isNotEmpty()) {
-            out[MetaKeys.TESTABILITY_BLOCKING_FIELDS] =
-                result.testabilityDiagnostic.blockingFields.joinToString(", ")
+        val diag = result.testabilityDiagnostic
+        if (diag.blockingFields.isNotEmpty()) {
+            out[MetaKeys.TESTABILITY_BLOCKING_FIELDS] = diag.blockingFields.joinToString(", ")
+        }
+        // Reasons + refactor hints sérialisées sur le ROOT pour que
+        // PromptBuilder puisse court-circuiter sans re-walker l'arbre. Format
+        // un-par-ligne ('\n') — cohérent avec INIT_REFACTOR_HINTS.
+        if (diag.reasons.isNotEmpty()) {
+            out[MetaKeys.TESTABILITY_REASONS] = diag.reasons.joinToString("\n")
+        }
+        if (diag.refactorHints.isNotEmpty()) {
+            out[MetaKeys.TESTABILITY_REFACTOR_HINTS] = diag.refactorHints.joinToString("\n")
         }
         return out
     }

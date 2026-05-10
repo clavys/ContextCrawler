@@ -25,7 +25,11 @@
       "Bash(xargs grep -hE \"testsuite name=|tests=\\\\\"\")",
       "Bash(xargs grep -hE \"testsuite name=\")",
       "Bash(git mv *)",
-      "Bash(./gradlew compileTestKotlin --rerun-tasks)"
+      "Bash(./gradlew compileTestKotlin --rerun-tasks)",
+      "Bash(grep -n \"##\\\\|^# \\\\|partials\\\\|MetaPromptCompose\\\\|LayerCompos\\\\|CleanupStage\\\\|template\" C:\\\\\\\\MesProjet\\\\\\\\Kotlin\\\\\\\\ContextCrawler\\\\\\\\specs\\\\\\\\ARCHITECTURE.md)",
+      "Bash(find C:\\\\\\\\MesProjet\\\\\\\\Kotlin\\\\\\\\ContextCrawler\\\\\\\\build\\\\\\\\reports\\\\\\\\tests\\\\\\\\test\\\\\\\\classes -name \"*.html\")",
+      "Bash(ls C:\\\\\\\\MesProjet\\\\\\\\Kotlin\\\\\\\\ContextCrawler\\\\\\\\build\\\\\\\\reports\\\\\\\\tests\\\\\\\\test)",
+      "Bash(./gradlew :test-project:compileJava --console=plain)"
     ]
   }
 }

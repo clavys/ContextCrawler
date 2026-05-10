@@ -66,6 +66,9 @@ object MetaKeys {
     const val HIERARCHY_LEVELS = "hierarchyLevels"
 
     // Diagnostic global de testabilité (porté sur le nœud root TARGET_METHOD).
+    // PromptBuilder court-circuite à un bloc d'alerte si TESTABILITY="false".
     const val TESTABILITY = "testability"                 // "true"/"false"
     const val TESTABILITY_BLOCKING_FIELDS = "testabilityBlockingFields"
+    const val TESTABILITY_REASONS = "testabilityReasons"           // séparées par '\n'
+    const val TESTABILITY_REFACTOR_HINTS = "testabilityRefactorHints" // séparées par '\n'
 }
