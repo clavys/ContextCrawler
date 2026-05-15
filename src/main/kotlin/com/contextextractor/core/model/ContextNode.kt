@@ -62,6 +62,12 @@ object MetaKeys {
     const val METHOD_RETURN_TYPE = "methodReturnType"
     const val METHOD_PARAMS = "methodParams"              // 'name:typeFqn' séparés par ', '
 
+    // Corps source des méthodes intra-SUT — STRATEGIE.md §3.1 (SUT_BOOTSTRAP)
+    // et §3.2 (INTERNAL_LOGIC). Frontière fermée pour MOCK_EXTERNAL (§3.3 « STOP :
+    // ne jamais lire le corps des méthodes externes »). Vide si non capturé.
+    const val METHOD_BODY = "methodBody"                  // root node — corps de methodeCible
+    const val INTERNAL_METHOD_BODY = "internalMethodBody" // nœuds INTERNAL_METHOD
+
     // Hiérarchie : niveaux séparés par ' → ' (du SUT à la super-classe la plus haute).
     const val HIERARCHY_LEVELS = "hierarchyLevels"
 

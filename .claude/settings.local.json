@@ -29,7 +29,16 @@
       "Bash(grep -n \"##\\\\|^# \\\\|partials\\\\|MetaPromptCompose\\\\|LayerCompos\\\\|CleanupStage\\\\|template\" C:\\\\\\\\MesProjet\\\\\\\\Kotlin\\\\\\\\ContextCrawler\\\\\\\\specs\\\\\\\\ARCHITECTURE.md)",
       "Bash(find C:\\\\\\\\MesProjet\\\\\\\\Kotlin\\\\\\\\ContextCrawler\\\\\\\\build\\\\\\\\reports\\\\\\\\tests\\\\\\\\test\\\\\\\\classes -name \"*.html\")",
       "Bash(ls C:\\\\\\\\MesProjet\\\\\\\\Kotlin\\\\\\\\ContextCrawler\\\\\\\\build\\\\\\\\reports\\\\\\\\tests\\\\\\\\test)",
-      "Bash(./gradlew :test-project:compileJava --console=plain)"
+      "Bash(./gradlew :test-project:compileJava --console=plain)",
+      "Bash(grep -rnE 'Config.*in.*result\\\\.mocks|result\\\\.mocks.*Config|\\\\\"\\\\$pkg\\\\.Config\\\\\" in result\\\\.mocks' C:/MesProjet/Kotlin/ContextCrawler/src/test/)",
+      "Bash(grep -nE \"callChain|chain\\\\\\\\s*=|InitPath\\\\\\\\\\(\" 'C:/MesProjet/Kotlin/ContextCrawler/src/main/kotlin/com/contextextractor/strategies/recursive/initbloc/EntryPointFinder.kt')",
+      "Bash(grep -rnE \"CALL_PUBLIC_TRANSITIVE.*callChain|callChain.*\\\\\\\\[|\\\\\\\\[.*startInternal|\\\\\\\\[\\\\\"warmup\\\\\"\" 'C:/MesProjet/Kotlin/ContextCrawler/src/test/')",
+      "Bash(grep -rnE \"\\\\\\\\.callChain|callChain\\\\\\\\s*==|callChain.*equals|listOf.*startInternal\" 'C:/MesProjet/Kotlin/ContextCrawler/src/test/')",
+      "Bash(grep -rnE \"CALL_PUBLIC_TRANSITIVE\\\\\\\\\\(|callChain\\\\\\\\s*=\" 'C:/MesProjet/Kotlin/ContextCrawler/src/main/kotlin/')",
+      "Bash(grep -nE \"bucket 3.*all CALL_PUBLIC|CALL_PUBLIC_TRANSITIVE\\\\\\\\\\(\" 'C:/MesProjet/Kotlin/ContextCrawler/src/test/kotlin/com/contextextractor/strategy/initbloc/InitStrategyPriorityTest.kt')",
+      "Bash(./gradlew compileTestKotlin --rerun-tasks --console=plain)",
+      "Bash(./gradlew compileKotlin compileTestKotlin -q)",
+      "Bash(./gradlew integrationTest -q)"
     ]
   }
 }

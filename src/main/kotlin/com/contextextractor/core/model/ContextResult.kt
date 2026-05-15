@@ -80,7 +80,13 @@ data class TargetMethodAnalysis(
     val thrownExceptions: List<ThrownException> = emptyList(),
     val caughtExceptions: List<CaughtException> = emptyList(),
     val conditionalBranches: List<ConditionalBranch> = emptyList(),
-    val nonDeterministicSources: List<String> = emptyList()
+    val nonDeterministicSources: List<String> = emptyList(),
+    // Corps source de la méthode (incluant accolades extérieures) — STRATEGIE.md
+    // §3.1 ligne 192 « Corps = AST(methodeCible) ». Le LLM en a besoin pour
+    // reproduire fidèlement la logique métier ; les éléments structurés ci-dessus
+    // restent capturés en parallèle (BLOC 2). Vide si l'introspector n'a pas pu
+    // lire le source (méthode abstraite, cas dégradé §8bis).
+    val body: String = ""
 )
 
 // ── BLOCs 4-5 : protocole d'instanciation du SUT ─────────────────────────────
@@ -108,7 +114,12 @@ data class InternalLogic(
     val signature: MethodSignature,
     val callSummaries: List<String> = emptyList(),
     val thrownExceptions: List<ThrownException> = emptyList(),
-    val caughtExceptions: List<CaughtException> = emptyList()
+    val caughtExceptions: List<CaughtException> = emptyList(),
+    // Corps source de la sous-méthode (incluant accolades) — STRATEGIE.md §3.2
+    // ligne 362 « Corps = AST(Methode) ». Frontière intra-SUT identique à la
+    // target : on lit le corps pour le rendre au LLM. Vide pour les internes
+    // synthétisés post-BLOC 7 dont le port n'aurait pas exposé le source.
+    val body: String = ""
 )
 
 // MockInfo — STRATEGIE.md §3.3 / §5. `requiredSignatures` accumule les

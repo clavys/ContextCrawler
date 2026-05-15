@@ -43,7 +43,7 @@ class DefaultsConfigSource : ConfigSource {
             "maxDtoCount" to 15,
             "maxMockCount" to 10,
             "maxInternalLogicCount" to 12,
-            "maxEstimatedTokens" to 8000
+            "maxEstimatedTokens" to 50_000
         )
     )
 }

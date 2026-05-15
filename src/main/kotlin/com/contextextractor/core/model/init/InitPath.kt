@@ -37,11 +37,25 @@ data class InitPath(
     // ctor reste géré par BLOC 4, pas réinjecté ici).
     val parametersRequired: List<Parameter>,
     // Appels vers des classes hors hiérarchie SUT, agrégés sur l'ENSEMBLE de
-    // la chaîne (§4.4 : `collecterAppelsExternes(current.chaine, callGraph)`).
+    // la chaîne ET de la downstreamChain (§4.4 + extension étape 7 #3).
     val externalCallsToStub: List<MethodCall>,
     // Champs assignés sur la chaîne, autres que le champ cible (§4.4 :
     // `collecterChampsAssignes(current.chaine) - {champ.nom}`). Représente
     // les effets de bord d'un appel au point d'entrée — coût de testabilité.
     val sideEffects: Set<String>,
-    val score: Int
+    val score: Int,
+    // Méthodes intra-SUT atteintes en aval depuis l'assignment site (= chain[0]).
+    // Étape 7 #3 — capture les callees significatifs du seed jusqu'aux appels
+    // externes (ex: `warmup` assigne via `buildCache()` qui appelle `loader.load()`).
+    // Sans ce champ, `collectExternalCalls` ne voyait que les links upstream et
+    // ratait `loader.load()`, produisant un prompt sans la section stubs.
+    //
+    // **Convention d'ordre** : ordre BFS forward depuis le seed.
+    //   `[appelleeDirect_du_seed, ..., feuilleIntraSut]`. Le rendu utilisateur
+    //   concatène à la chain reverse pour produire l'ordre runtime complet :
+    //   `[entryPoint, ..., assignmentSite] ++ [callee1, callee2, ...]`.
+    //
+    // **Vide par défaut** : pour IMPLICIT_VIA_CONSTRUCTOR ou PUBLIC_POST_CONSTRUCT
+    // sans propagation downstream nécessaire, ce champ reste vide.
+    val downstreamChain: List<MethodKey> = emptyList()
 )

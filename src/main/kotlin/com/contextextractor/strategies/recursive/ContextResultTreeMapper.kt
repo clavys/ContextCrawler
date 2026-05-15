@@ -96,6 +96,12 @@ class ContextResultTreeMapper {
         if (diag.refactorHints.isNotEmpty()) {
             out[MetaKeys.TESTABILITY_REFACTOR_HINTS] = diag.refactorHints.joinToString("\n")
         }
+        // Corps source de la méthode cible — STRATEGIE.md §3.1. Sérialisé en
+        // metadata pour transit jusqu'au renderer ; vide si le port n'a pas
+        // exposé de body (cas dégradé §8bis).
+        if (result.targetMethod.body.isNotEmpty()) {
+            out[MetaKeys.METHOD_BODY] = result.targetMethod.body
+        }
         return out
     }
 
@@ -167,7 +173,22 @@ class ContextResultTreeMapper {
             }
             is InitStrategy.CALL_PUBLIC_TRANSITIVE -> {
                 meta[MetaKeys.INIT_METHOD_NAME] = strategy.entryPoint.name
-                meta[MetaKeys.INIT_CALL_CHAIN] = strategy.callChain.joinToString(" → ")
+                // `callChain` est stocké dans l'ordre BFS canonique
+                // `[methodeAssignatrice(args), ..., entryPoint(args)]` (chaque
+                // élément est `MethodSignature.canonical()` = `name(fqn,...)`).
+                // `downstreamChain` est stocké dans l'ordre BFS forward depuis
+                // le seed `[appelleeDirect, ..., feuille]` (étape 7 #3).
+                // Le rendu utilisateur concatène les deux pour produire l'ordre
+                // RUNTIME complet :
+                //   reverse(callChain) ++ downstreamChain
+                //   = [entryPoint, ..., assignmentSite, callee1, callee2, ...]
+                // EXPECTED_PROMPTS.md case93 verrouille
+                // `start → startInternal → warmup → buildCache`.
+                // La data class reste source de vérité BFS — on transforme ICI.
+                val runtimeChain = strategy.callChain.reversed() + strategy.downstreamChain
+                meta[MetaKeys.INIT_CALL_CHAIN] = runtimeChain
+                    .map { it.substringBefore('(') }
+                    .joinToString(" → ")
                 if (strategy.args.isNotEmpty()) {
                     meta[MetaKeys.INIT_ARGS] = strategy.args.joinToString(", ") {
                         "${it.name}:${it.type.fqName}"
@@ -184,7 +205,12 @@ class ContextResultTreeMapper {
             }
             is InitStrategy.CALL_SAME_PACKAGE -> {
                 meta[MetaKeys.INIT_METHOD_NAME] = strategy.method.name
-                meta[MetaKeys.INIT_CALL_CHAIN] = strategy.callChain.joinToString(" → ")
+                // Même contrat BFS que CALL_PUBLIC_TRANSITIVE — reverse + strip
+                // signature pour l'ordre runtime / nom propre côté rendu.
+                meta[MetaKeys.INIT_CALL_CHAIN] = strategy.callChain
+                    .reversed()
+                    .map { it.substringBefore('(') }
+                    .joinToString(" → ")
             }
             is InitStrategy.UNTESTABLE_AS_IS -> {
                 meta[MetaKeys.INIT_REASON] = strategy.reason
@@ -250,6 +276,11 @@ class ContextResultTreeMapper {
                     put(MetaKeys.METHOD_RETURN_TYPE, logic.signature.returnType.fqName)
                     if (logic.callSummaries.isNotEmpty()) {
                         put("internalCallSummaries", logic.callSummaries.joinToString("\n"))
+                    }
+                    // Corps source — STRATEGIE.md §3.2. Frontière intra-SUT
+                    // ouverte (cf §3.3 « STOP » qui ne s'applique qu'aux mocks).
+                    if (logic.body.isNotEmpty()) {
+                        put(MetaKeys.INTERNAL_METHOD_BODY, logic.body)
                     }
                 }
             )

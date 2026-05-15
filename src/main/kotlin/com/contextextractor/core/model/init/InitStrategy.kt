@@ -61,7 +61,11 @@ sealed class InitStrategy {
         val callChain: List<String>,        // noms de méthodes ordre BFS
         val args: List<Parameter>,
         val stubsRequired: List<MethodCall>,
-        val sideEffects: List<String>
+        val sideEffects: List<String>,
+        // Étape 7 #3 — callees intra-SUT atteints en aval depuis l'assignment
+        // site, format `name(fqn1,fqn2,...)` (canonical). Vide si l'assignment
+        // site n'appelle rien d'intra-SUT. Ordre BFS forward depuis le seed.
+        val downstreamChain: List<String> = emptyList()
     ) : InitStrategy()
 
     // 8 / 9 — Setter ou méthode initialisatrice protected/package — accessibles

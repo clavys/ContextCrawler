@@ -142,6 +142,127 @@ class PromptBuilderTest {
             "le séparateur de callChain doit apparaître pour case93")
     }
 
+    @Test
+    fun `case93 callChain is rendered in runtime order — entry point first, assignment site last`() {
+        // Verrou EXPECTED_PROMPTS.md case93 : la chaîne lisible par le LLM
+        // suit l'ordre d'invocation runtime — `start → startInternal → warmup`,
+        // PAS l'ordre BFS interne `warmup → startInternal → start`.
+        // Étape 7 fix #2 : reverse à la projection metadata.
+        val output = buildFor(Fixtures.case93(),
+            "com.testproject.case93.OrderService", "calculate")
+
+        // Verrou direct : la chaîne complète dans l'ordre runtime attendu,
+        // avec extension downstream (#3) jusqu'à `buildCache`.
+        assertTrue(output.contains("start → startInternal → warmup → buildCache"),
+            "la chaîne complète doit être rendue dans l'ordre runtime " +
+                "(entry point → ... → assignmentSite → callees downstream)")
+
+        // Verrou inverse : l'ordre BFS NE doit PAS apparaître dans le prompt.
+        assertFalse(output.contains("warmup → startInternal → start"),
+            "l'ordre BFS interne (warmup → startInternal → start) ne doit " +
+                "pas fuiter au rendu utilisateur")
+    }
+
+    @Test
+    fun `case93 captures loader_load() as a stub — verrou step 7 fix 3`() {
+        // EXPECTED_PROMPTS.md case93 : « Le code suggéré contient un
+        // when(loader.load()).thenReturn(...) AVANT sut.start(); »
+        // L'appel `loader.load()` vit dans `buildCache()` (downstream du
+        // assignment site warmup). Sans la traversée downstream étape 7 #3,
+        // ce stub était invisible.
+        val output = buildFor(Fixtures.case93(),
+            "com.testproject.case93.OrderService", "calculate")
+
+        // Verrou texte dans la section "Stubs requis avant l'appel".
+        assertTrue(output.contains("Stubs requis avant l'appel"),
+            "section 'Stubs requis avant l'appel' attendue (downstream produit l'appel externe)")
+        assertTrue(output.contains("Loader") && output.contains("load"),
+            "le stub doit mentionner Loader et load (call externe atteint via buildCache)")
+    }
+
+    @Test
+    fun `case93 lists internal helpers in Sous-methodes internes`() {
+        // Verrou EXPECTED_PROMPTS.md case93 : « # Sous-méthodes internes liste
+        // startInternal, warmup, buildCache ». Étape 7 #3 — synthèse downstream
+        // ajoute buildCache à internalLogics. startInternal/warmup arrivent via
+        // BLOC 6 (le callGraph les visite déjà). buildCache était l'écart.
+        val output = buildFor(Fixtures.case93(),
+            "com.testproject.case93.OrderService", "calculate")
+
+        assertTrue(output.contains("# Sous-méthodes internes"),
+            "section '# Sous-méthodes internes' attendue dès qu'au moins une " +
+                "méthode intra-SUT est référencée par le protocole d'init")
+        assertTrue(output.contains("buildCache"),
+            "buildCache doit figurer parmi les sous-méthodes internes (callee " +
+                "downstream de warmup, ajouté par l'enrichissement étape 7 #3)")
+    }
+
+    // ── Verrous body-only — corps source des méthodes intra-SUT ──────────────
+    //
+    // STRATEGIE.md §3.1 (SUT_BOOTSTRAP) et §3.2 (INTERNAL_LOGIC) : le corps des
+    // méthodes intra-SUT EST capturé et rendu. §3.3 (MOCK_EXTERNAL) ligne « STOP :
+    // ne jamais lire le corps des méthodes externes » : verrou de frontière —
+    // aucun corps de méthode externe ne doit fuiter dans le prompt.
+
+    @Test
+    fun `case92 target method body is rendered in CONTEXT layer`() {
+        val output = buildFor(Fixtures.case92(),
+            "com.testproject.case92.OrderService", "calculate")
+
+        // §6 — bloc « Code source : ```java …``` » sous la signature cible.
+        assertTrue(output.contains("Code source :"),
+            "bloc 'Code source :' attendu pour la méthode cible (§6)")
+        // Fragments caractéristiques du body case92.calculate (cf Fixtures.kt).
+        // Verrouille que le LLM voit la logique réelle, pas seulement la signature.
+        assertTrue(output.contains("if (request == null)"),
+            "le corps de calculate doit contenir le guard if (request == null)")
+        assertTrue(output.contains("throw new IllegalArgumentException"),
+            "le corps de calculate doit contenir le throw IllegalArgumentException")
+        assertTrue(output.contains("config.apply(request.getRawAmount())"),
+            "le corps de calculate doit contenir l'appel config.apply(...)")
+    }
+
+    @Test
+    fun `case93 internal method bodies are rendered in Sous-methodes internes`() {
+        val output = buildFor(Fixtures.case93(),
+            "com.testproject.case93.OrderService", "calculate")
+
+        // Le body de buildCache contient `loader.load()` ET `new Cache(entries)`
+        // (cf Fixtures.kt). Cet appel est UNIQUE au body — il ne figure dans
+        // aucun callSummary ou trace BLOC 6 sous cette forme exacte. C'est donc
+        // le marqueur le plus fiable pour vérifier que le body texte fuit bien
+        // jusqu'au rendu.
+        assertTrue(output.contains("List<CacheEntry> entries = loader.load();"),
+            "le corps de buildCache doit apparaître intégralement (étape body-only §3.2)")
+        assertTrue(output.contains("return new Cache(entries);"),
+            "le corps de buildCache doit contenir le return new Cache(entries)")
+    }
+
+    @Test
+    fun `case92 Mocks section never leaks external method bodies — STRATEGIE §3,3`() {
+        // Verrou de frontière : §3.3 ligne « STOP : ne jamais lire le corps des
+        // méthodes externes ». La section # Mocks liste les signatures des
+        // méthodes appelées sur les mocks (PricingGateway.fetchRate) mais NE
+        // DOIT JAMAIS rendre un bloc ```java de leur implémentation.
+        // Empêche une future généralisation utile (« body partout ») de
+        // contaminer silencieusement la frontière externe.
+        val output = buildFor(Fixtures.case92(),
+            "com.testproject.case92.OrderService", "calculate")
+
+        val mocksStart = output.indexOf("# Mocks")
+        assertTrue(mocksStart >= 0, "section # Mocks attendue pour case92")
+        val nextSection = output.indexOf("\n# ", mocksStart + 1)
+        val mocksEnd = if (nextSection >= 0) nextSection else output.length
+        val mocksSection = output.substring(mocksStart, mocksEnd)
+
+        assertFalse(mocksSection.contains("Code source :"),
+            "la section # Mocks ne doit JAMAIS contenir 'Code source :' — " +
+                "§3.3 interdit la lecture du corps des méthodes externes")
+        assertFalse(mocksSection.contains("```java"),
+            "la section # Mocks ne doit jamais ouvrir un bloc ```java " +
+                "(frontière MOCK_EXTERNAL fermée par construction)")
+    }
+
     // ── Pivot UNTESTABLE-SUT — verrou PROMPT_FORMAT.md §"Special case" ───────
 
     @Test

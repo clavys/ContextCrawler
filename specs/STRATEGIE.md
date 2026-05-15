@@ -192,6 +192,11 @@ Recurse(SUT, methodeCible, visites, resultat, SUT_BOOTSTRAP, budget, profondeur)
   Corps = AST(methodeCible)
   resultat.methodeCible.signature          = capturerSignature(methodeCible)
   resultat.methodeCible.exceptionsDeclarees = methodeCible.throws
+  // Texte source intégral du corps (accolades incluses) — frontière SUT_BOOTSTRAP
+  // ouverte : la spec §3.3 ligne « STOP » fermera cette frontière côté
+  // MOCK_EXTERNAL. Le LLM en a besoin pour reproduire fidèlement la logique
+  // métier, en complément des éléments structurés (appelsInstance, branches…).
+  resultat.methodeCible.corps              = corpsTexte(methodeCible)
 
   ChampsActifs       = {}
   AppelsInstance     = []   // a.b()
@@ -364,7 +369,12 @@ Recurse(Classe, Methode, visites, resultat, INTERNAL_LOGIC, budget, profondeur)
     signature           : capturerSignature(Methode),
     exceptionsLancees   : [],
     exceptionsCatchees  : [],
-    appelsResume        : []
+    appelsResume        : [],
+    // Texte source intégral du corps — frontière intra-SUT identique à §3.1.
+    // INTERNAL_LOGIC est par construction limité à la hiérarchie SUT (voir
+    // condition `ClasseAppel ∈ HierarchieComplete(SUT)` ci-dessous), donc
+    // aucun conflit avec §3.3 « STOP ».
+    corps               : corpsTexte(Methode)
   }
 
   Pour chaque nœud dans Corps :
@@ -913,7 +923,10 @@ data class AnalyseMethodeCible(
     val exceptionsLancees   : List<ExceptionLancee>,
     val exceptionsCatchees  : List<ExceptionCatchee>,
     val branches            : List<BrancheCondition>,
-    val sourcesIndéter      : List<String>
+    val sourcesIndéter      : List<String>,
+    // §3.1 BLOC 2 — texte source du corps (accolades incluses). Vide si le
+    // port n'a pas pu lire le source (méthode abstraite, cas dégradé §8bis).
+    val corps               : String = ""
 )
 
 // ───────── Mocks ─────────
@@ -954,7 +967,10 @@ data class LogiqueInterne(
     val signature           : SignatureMethode,
     val exceptionsLancees   : List<ExceptionLancee>,
     val exceptionsCatchees  : List<ExceptionCatchee>,
-    val appelsResume        : List<String>
+    val appelsResume        : List<String>,
+    // §3.2 — texte source du corps. Frontière intra-SUT (cf §3.3 « STOP » qui
+    // s'applique exclusivement à MOCK_EXTERNAL). Vide si non capturé.
+    val corps               : String = ""
 )
 
 data class StatiqueInfo(val classe: String, val methode: String, val signature: SignatureMethode)
@@ -1052,6 +1068,11 @@ Hiérarchie : {hierarchie format A → B → C avec annotations}
 
 # Méthode cible
 {signature complète, types qualifiés}
+{si corps non vide :}
+Code source :
+```java
+{corps texte intégral, accolades incluses}
+```
 - throws : {throwsDeclarees}
 - exceptions lancées dans le corps : {exceptionsLancees}
 - exceptions catchées : {exceptionsCatchees}
@@ -1125,6 +1146,11 @@ Méthodes à stubber :
 # Sous-méthodes internes (information seulement, ne pas mocker)
 {Pour chaque :}
 ## {classe}#{méthode}{signature}
+{si corps non vide :}
+Code source :
+```java
+{corps texte intégral, accolades incluses}
+```
 - lance : {exceptions}
 - appels-clés : {résumé}
 

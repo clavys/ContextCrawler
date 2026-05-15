@@ -37,8 +37,8 @@
         <supportsKotlinPluginMode supportsK2="true"/>
     </extensions>
 
-    <!-- Action principale — étape 7 (mode COPY). Tools menu + raccourci Alt+G.
-         Mappée aussi dans le contexte de l'éditeur (clic droit). -->
+    <!-- Actions — étape 7 (mode COPY) + étape 8 (mode LLM_CALL).
+         Toutes deux disponibles depuis Tools menu + clic droit éditeur. -->
     <actions>
         <action
             id="com.contextextractor.ExtractContextAction"
@@ -46,6 +46,18 @@
             text="Extract Method Context (ContextCrawler)"
             description="Analyzes the method under cursor and generates an LLM prompt for a JUnit 5 test.">
             <keyboard-shortcut keymap="$default" first-keystroke="alt G"/>
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
+
+        <!-- Étape 8 — mode LLM_CALL via ClaudeCodeClient (CLI locale).
+             Délègue l'appel au binaire `claude` du PATH ; aucune clé API. -->
+        <action
+            id="com.contextextractor.GenerateTestAction"
+            class="com.contextextractor.ide.action.GenerateTestAction"
+            text="Generate Test via Claude (ContextCrawler)"
+            description="Extracts method context and calls the Claude CLI to generate a JUnit 5 test.">
+            <keyboard-shortcut keymap="$default" first-keystroke="alt shift G"/>
             <add-to-group group-id="ToolsMenu" anchor="last"/>
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
         </action>

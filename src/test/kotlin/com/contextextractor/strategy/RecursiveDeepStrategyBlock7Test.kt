@@ -196,4 +196,95 @@ class RecursiveDeepStrategyBlock7Test {
         assertNotNull(callers)
         assertEquals(listOf("$pkg.SUT#init()"), callers)
     }
+
+    // ── Réconciliation post-BLOC 7 — verrou étape 7 ──────────────────────────
+    //
+    // Quand un même type T est porté par PLUSIEURS champs avec des stratégies
+    // différentes, T reste dans `mocks` ssi AU MOINS UN champ a stratégie
+    // MOCKITO_INJECT_MOCKS. Sinon T est retiré.
+    //
+    // Cas testé : deux champs `Repo` — `repoA` (@Autowired → MOCKITO) et
+    // `repoB` (initialisé via setter). Le mock Repo doit rester car repoA en
+    // a besoin pour @InjectMocks.
+    //
+    // Verrou inverse implicite : si `repoA` était aussi non-MOCKITO, Repo
+    // serait retiré (cas case92/case93 — tests dédiés dans ces fichiers).
+
+    @Test
+    fun `reconciliation — type kept in mocks if any field of that type is MOCKITO`() {
+        val pkg = "com.test.multifield"
+        val fake = fixture {
+            klass("$pkg.Repo", isInterface = true) {
+                method("findAll", returns = T("java.lang.String"))
+                method("save") { param("v", T("java.lang.String")) }
+            }
+            klass("$pkg.SUT") {
+                field(
+                    "repoA",
+                    T("$pkg.Repo"),
+                    annotations = listOf("org.springframework.beans.factory.annotation.Autowired")
+                )
+                field("repoB", T("$pkg.Repo"))
+                method("setRepoB", visibility = "public") {
+                    param("r", T("$pkg.Repo"))
+                    assigns("$pkg.SUT", "repoB", rhsExpression = "r")
+                }
+                method("calculate", returns = T("java.lang.String"),
+                    body = "return repoA.findAll() + repoB.findAll();") {
+                    reads("$pkg.SUT", "repoA")
+                    reads("$pkg.SUT", "repoB")
+                    calls("$pkg.Repo", "findAll")
+                }
+            }
+        }
+        val sut = fake.resolveClass("$pkg.SUT")!!
+        val target = fake.listMethodsOf("$pkg.SUT").single { it.name == "calculate" }
+        val result = strategy.extractCore(fake, DefaultClassifier(), StrategyConfig(), sut, target)
+
+        // Verrou : repoA est MOCKITO, repoB est SETTER. Au moins un MOCKITO
+        // sur le type Repo → Repo PRÉSERVÉ dans mocks.
+        assertTrue("$pkg.Repo" in result.mocks.keys,
+            "Repo doit rester dans mocks car au moins un champ (repoA) est MOCKITO_INJECT_MOCKS")
+    }
+
+    @Test
+    fun `reconciliation — type removed if all fields of that type are non-MOCKITO`() {
+        // Symétrique du test précédent : DEUX champs de type Helper, AUCUN
+        // n'est MOCKITO → Helper retiré du mocks map.
+        val pkg = "com.test.allnonmockito"
+        val fake = fixture {
+            klass("$pkg.Helper") {
+                method("compute", returns = T("int"))
+            }
+            klass("$pkg.SUT") {
+                field("helperA", T("$pkg.Helper"))
+                field("helperB", T("$pkg.Helper"))
+                method("setHelperA", visibility = "public") {
+                    param("h", T("$pkg.Helper"))
+                    assigns("$pkg.SUT", "helperA", rhsExpression = "h")
+                }
+                method("setHelperB", visibility = "public") {
+                    param("h", T("$pkg.Helper"))
+                    assigns("$pkg.SUT", "helperB", rhsExpression = "h")
+                }
+                method("calculate", returns = T("int"),
+                    body = "return helperA.compute() + helperB.compute();") {
+                    reads("$pkg.SUT", "helperA")
+                    reads("$pkg.SUT", "helperB")
+                    calls("$pkg.Helper", "compute")
+                }
+            }
+        }
+        val sut = fake.resolveClass("$pkg.SUT")!!
+        val target = fake.listMethodsOf("$pkg.SUT").single { it.name == "calculate" }
+        val result = strategy.extractCore(fake, DefaultClassifier(), StrategyConfig(), sut, target)
+
+        // Les deux champs ont stratégie SETTER → Helper retiré.
+        val helperAStrat = result.initProtocol["helperA"]?.recommendedStrategy
+        val helperBStrat = result.initProtocol["helperB"]?.recommendedStrategy
+        assertTrue(helperAStrat is InitStrategy.SETTER, "helperA → SETTER (était: $helperAStrat)")
+        assertTrue(helperBStrat is InitStrategy.SETTER, "helperB → SETTER (était: $helperBStrat)")
+        assertFalse("$pkg.Helper" in result.mocks.keys,
+            "Helper doit être retiré : aucun champ de ce type n'est MOCKITO_INJECT_MOCKS")
+    }
 }

@@ -6,6 +6,7 @@ import com.contextextractor.strategies.recursive.RecursiveDeepStrategy
 import com.contextextractor.fakes.Fixtures
 import com.contextextractor.fakes.listMethodsOf
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -77,20 +78,16 @@ class RecursiveDeepStrategyCase91Test {
     // ── Sous-étape 4c — BLOC 6 ───────────────────────────────────────────────
 
     @Test
-    fun `BLOC 6a — DiscountRepository (interface) and DiscountCache (business methods) both mocked`() {
+    fun `BLOC 6a — DiscountRepository mocked, DiscountCache reconciled out`() {
         // DiscountRepository : interface @Repository → MOCK_EXTERNAL via rule 8.
-        // DiscountCache : a `warm(List)` et `lookup(String)` (pas des accesseurs)
-        //   → rule 10 ne fire pas → rule 12 défaut → MOCK_EXTERNAL.
+        // DiscountCache : classifié MOCK_EXTERNAL en BLOC 6 (rule 12 défaut),
+        //   PUIS retiré par la réconciliation post-BLOC 7 car son champ a
+        //   stratégie CALL_POST_CONSTRUCT (auto-construit). EXPECTED_PROMPTS.md
+        //   case91 verrouille : « mocks ne contient PAS DiscountCache ».
         assertTrue("$pkg.DiscountRepository" in result.mocks.keys)
-        assertTrue("$pkg.DiscountCache" in result.mocks.keys)
-    }
-
-    @Test
-    fun `BLOC 6c — DiscountCache mock has lookup(String) signature from calculate body`() {
-        val cache = result.mocks["$pkg.DiscountCache"]!!
-        val lookup = cache.requiredSignatures.single { it.name == "lookup" }
-        assertEquals(listOf("java.lang.String"), lookup.parameters.map { it.type.fqName })
-        assertEquals("double", lookup.returnType.fqName)
+        assertFalse("$pkg.DiscountCache" in result.mocks.keys,
+            "DiscountCache doit avoir été retiré des mocks par la réconciliation " +
+                "post-BLOC 7 (champ cache → CALL_POST_CONSTRUCT)")
     }
 
     @Test

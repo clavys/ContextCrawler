@@ -58,18 +58,22 @@ class RecursiveDeepStrategyCase92Test {
     }
 
     @Test
-    fun `Config is captured (current classifier — apply method blocks rule 10)`() {
-        // Documentation du comportement courant : Config a `apply(double)` qui
-        // n'est pas un accesseur → règle 10 ne déclenche pas → règle 12 défaut
-        // → MOCK_EXTERNAL. BLOC 7 (sous-étape 4e) raffinera la stratégie d'init
-        // de `config` en CALL_PUBLIC_WITH_ARGS(configure), ce qui dominera la
-        // classification mock pour le rendu final.
-        assertTrue("$pkg.Config" in result.mocks.keys)
+    fun `Config is reconciled out — BLOC 7 dominates BLOC 6 classification`() {
+        // Évolution étape 7 (verrou EXPECTED_PROMPTS.md case92) :
+        // Config a `apply(double)` qui n'est pas un accesseur → règle 10 ne
+        // déclenche pas → règle 12 défaut → BLOC 6 le classe MOCK_EXTERNAL.
+        // PUIS BLOC 7 décide CALL_PUBLIC_WITH_ARGS(configure) pour le champ
+        // `config`. La réconciliation post-BLOC 7 retire Config du mocks map
+        // car le champ s'auto-construit via configure() — sinon le prompt
+        // serait contradictoire (« mocke Config » + « sut.configure() crée
+        // config » dans le même prompt).
+        assertFalse("$pkg.Config" in result.mocks.keys,
+            "Config doit être retiré des mocks après la réconciliation post-BLOC 7 " +
+                "(champ config → CALL_PUBLIC_WITH_ARGS)")
 
-        val cfg = result.mocks["$pkg.Config"]!!
-        // Deux signatures appelées dans calculate : apply(double) et getRegion().
-        val sigNames = cfg.requiredSignatures.map { it.name }.toSet()
-        assertEquals(setOf("apply", "getRegion"), sigNames)
+        // PricingGateway reste mocké : son champ pricingGateway est @Autowired
+        // → MOCKITO_INJECT_MOCKS, donc la réconciliation le préserve.
+        assertTrue("$pkg.PricingGateway" in result.mocks.keys)
     }
 
     @Test

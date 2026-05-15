@@ -92,7 +92,8 @@ class StrategySelector(
                         callChain = path.chain.map { it.canonical },
                         args = path.parametersRequired,
                         stubsRequired = path.externalCallsToStub,
-                        sideEffects = path.sideEffects.toList()
+                        sideEffects = path.sideEffects.toList(),
+                        downstreamChain = path.downstreamChain.map { it.canonical }
                     )
                 }
             }

@@ -94,7 +94,8 @@ class RecursiveDeepStrategy : ContextStrategy {
 
         // ── BLOC 2 : ANALYSE DE LA MÉTHODE CIBLE ──────────────────────────────
         val targetCalls = introspector.listMethodCalls(targetMethod)
-        val targetAnalysis = analyzeTargetMethod(targetMethod, targetCalls)
+        val targetBody = introspector.readMethodBody(targetMethod)
+        val targetAnalysis = analyzeTargetMethod(targetMethod, targetCalls, targetBody)
 
         // ── BLOC 3 : INVENTAIRE DES CHAMPS UTILES ─────────────────────────────
         val activeFields = introspector.listFieldAccesses(targetMethod)
@@ -130,6 +131,32 @@ class RecursiveDeepStrategy : ContextStrategy {
             usefulFields, selectedConstructor, targetMethod
         )
 
+        // ── Réconciliation post-BLOC 7 — verrou critique étape 7 ──────────────
+        // Si BLOC 7 a décidé qu'un champ s'auto-construit (CALL_PUBLIC_WITH_ARGS,
+        // CALL_PUBLIC_TRANSITIVE, CALL_POST_CONSTRUCT, SETTER, etc.), alors le
+        // type du champ ne doit PLUS apparaître dans `mocks` — sinon le prompt
+        // serait contradictoire (« mocke Config » + « sut.configure() construit
+        // config » dans le même prompt). BLOC 7 a la priorité sémantique :
+        // c'est l'avis le plus tardif (et le plus informé).
+        val rawMocks = ctx.mocks.mapValues { it.value.build() }
+        val reconciledMocks = reconcileMocksWithInitProtocol(
+            rawMocks, block7.initProtocol, usefulFields
+        )
+
+        // ── Enrichissement internalLogics — étape 7 #3 ─────────────────────────
+        // Les méthodes downstream intra-SUT découvertes par BLOC 7 (ex : buildCache
+        // appelée depuis warmup) ne sont PAS visitées en BLOC 6 si la méthode
+        // cible ne les appelle pas. Pour qu'elles apparaissent dans la section
+        // « # Sous-méthodes internes » du prompt et que le LLM voie qu'elles
+        // existent (cf §3.2 — INTERNAL_LOGIC est légitime ici), on les ajoute
+        // synthétiquement à `internalLogics` avant la sortie.
+        val enrichedInternalLogics = enrichInternalLogicsWithDownstream(
+            introspector = introspector,
+            hierarchyFqns = hierarchyFqns,
+            initProtocol = block7.initProtocol,
+            existing = ctx.internalLogics.toMap()
+        )
+
         return ContextResult(
             sutFqName = sut.fqn,
             hierarchy = hierarchy,
@@ -140,8 +167,8 @@ class RecursiveDeepStrategy : ContextStrategy {
                 postConstruct = postConstruct
             ),
             targetMethod = targetAnalysis,
-            internalLogics = ctx.internalLogics.toMap(),
-            mocks = ctx.mocks.mapValues { it.value.build() },
+            internalLogics = enrichedInternalLogics,
+            mocks = reconciledMocks,
             dataStructures = ctx.dataStructures.toMap(),
             staticCalls = ctx.staticCalls.toList(),
             initProtocol = block7.initProtocol,
@@ -151,6 +178,94 @@ class RecursiveDeepStrategy : ContextStrategy {
             truncated = ctx.truncationReasons.isNotEmpty(),
             truncationReasons = ctx.truncationReasons.toList()
         )
+    }
+
+    // Réconciliation BLOC 6 ↔ BLOC 7 sur les mocks. Voir doc dans extractCore.
+    //
+    // **Règle** : pour chaque type T présent dans `mocks` qui correspond au
+    // type d'au moins un champ de la SUT, T est conservé UNIQUEMENT s'il
+    // existe au moins un champ de type T dont la stratégie d'init est
+    // MOCKITO_INJECT_MOCKS. Sinon T est supprimé.
+    //
+    // **Cas multi-champs même type** : `Config configA, Config configB` avec
+    // A=CALL_PUBLIC_WITH_ARGS et B=MOCKITO. Config reste dans mocks (B en a
+    // besoin). Si les DEUX étaient CALL_PUBLIC_*, Config serait retiré.
+    //
+    // **Cas type non-champ** : un type peut être dans mocks sans être un
+    // champ de la SUT (ex : argument passé à un appel de méthode externe).
+    // Dans ce cas il n'y a pas de stratégie d'init le concernant — on le
+    // conserve (verrou : `?: return@filterKeys true`).
+    private fun reconcileMocksWithInitProtocol(
+        rawMocks: Map<String, MockInfo>,
+        initProtocol: Map<String, FieldInitProtocol>,
+        fields: List<ClassField>
+    ): Map<String, MockInfo> {
+        val fieldsByType: Map<String, List<ClassField>> = fields.groupBy { it.type.fqName }
+        return rawMocks.filterKeys { typeFqn ->
+            val fieldsOfThisType = fieldsByType[typeFqn] ?: return@filterKeys true
+            fieldsOfThisType.any { field ->
+                initProtocol[field.name]?.recommendedStrategy is InitStrategy.MOCKITO_INJECT_MOCKS
+            }
+        }
+    }
+
+    // Étape 7 #3 — synthèse de méthodes downstream BLOC 7 dans internalLogics.
+    //
+    // Les `CALL_PUBLIC_TRANSITIVE.downstreamChain` contiennent des canonicals
+    // de méthodes intra-SUT atteintes en aval depuis l'assignment site
+    // (ex : `buildCache()` derrière `warmup`). Ces méthodes sont rarement
+    // visitées en BLOC 6 (la méthode cible ne les appelle pas) mais sont
+    // pertinentes pour le LLM : elles produisent les valeurs assignées et
+    // contiennent les appels externes à stubber.
+    //
+    // **Lookup classFqn** : on parcourt la hiérarchie pour matcher le canonical.
+    // Si plusieurs classes ont une méthode au même canonical (override), on
+    // prend la PREMIÈRE rencontrée — l'ordre `hierarchyFqns` est SUT → super,
+    // donc la version la plus dérivée gagne (cohérent avec dispatch dynamique).
+    //
+    // **Idempotent** : si l'entrée existe déjà (BLOC 6 l'a visitée), on ne
+    // l'écrase pas. Le résumé d'appels existant a déjà la profondeur du BLOC 6.
+    private fun enrichInternalLogicsWithDownstream(
+        introspector: CodeIntrospector,
+        hierarchyFqns: Set<String>,
+        initProtocol: Map<String, FieldInitProtocol>,
+        existing: Map<String, InternalLogic>
+    ): Map<String, InternalLogic> {
+        val downstreamCanonicals = initProtocol.values
+            .map { it.recommendedStrategy }
+            .filterIsInstance<InitStrategy.CALL_PUBLIC_TRANSITIVE>()
+            .flatMap { it.downstreamChain }
+            .toSet()
+        if (downstreamCanonicals.isEmpty()) return existing
+
+        // Index hiérarchie : `(classFqn, MethodSignature)` énuméré une fois.
+        val hierarchyMethods: List<Pair<String, MethodSignature>> = hierarchyFqns.flatMap { fqn ->
+            val cls = introspector.resolveClass(fqn) ?: return@flatMap emptyList()
+            introspector.listMethods(cls).map { fqn to it }
+        }
+
+        val out = LinkedHashMap(existing)
+        for (canonical in downstreamCanonicals) {
+            val match = hierarchyMethods.firstOrNull { (_, m) -> m.canonical() == canonical }
+                ?: continue
+            val (ownerFqn, sig) = match
+            val key = "$ownerFqn#${sig.canonical()}"
+            if (key in out) continue
+            // Synthèse minimale : résumé d'appels (= une ligne par appel non-static).
+            // Le format `targetType.methodName` est cohérent avec le rendu §6 actuel.
+            val callSummaries = introspector.listMethodCalls(sig)
+                .filter { !it.isStatic }
+                .map { c -> "${c.targetType}.${c.methodName}" }
+                .distinct()
+            // §3.2 — la méthode est intra-SUT, frontière ouverte : on lit le corps.
+            val body = introspector.readMethodBody(sig)
+            out[key] = InternalLogic(
+                signature = sig,
+                callSummaries = callSummaries,
+                body = body
+            )
+        }
+        return out
     }
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -306,7 +421,8 @@ class RecursiveDeepStrategy : ContextStrategy {
 
     private fun analyzeTargetMethod(
         targetMethod: MethodSignature,
-        calls: List<MethodCall>
+        calls: List<MethodCall>,
+        body: String
     ): TargetMethodAnalysis {
         val instanceCalls = calls.filterNot { it.isStatic }.map {
             InstanceCall(it.targetType, "", it.methodName, it.argTypes)
@@ -322,7 +438,8 @@ class RecursiveDeepStrategy : ContextStrategy {
         return TargetMethodAnalysis(
             signature = targetMethod,
             instanceCalls = instanceCalls,
-            staticCalls = staticCalls
+            staticCalls = staticCalls,
+            body = body
         )
     }
 
@@ -550,12 +667,17 @@ class RecursiveDeepStrategy : ContextStrategy {
 
         val calls = ctx.introspector.listMethodCalls(method)
         val callSummaries = calls.map { "${it.targetType}#${it.methodName}(${it.argTypes.joinToString(",")})" }
+        // §3.2 ligne 362 : « Corps = AST(Methode) ». On capture le texte source
+        // pour rendu dans la layer CONTEXT. Frontière intra-SUT (cette méthode
+        // n'est appelée que pour des classes de la hiérarchie du SUT).
+        val body = ctx.introspector.readMethodBody(method)
 
         val logicKey = "$classFqn#${method.canonical()}"
         ctx.internalLogics[logicKey] = InternalLogic(
             signature = method,
-            callSummaries = callSummaries
+            callSummaries = callSummaries,
             // thrownExceptions / caughtExceptions : extension port nécessaire.
+            body = body
         )
 
         // Récursion : ré-appliquer BLOC 6c sur les appels de ce corps.

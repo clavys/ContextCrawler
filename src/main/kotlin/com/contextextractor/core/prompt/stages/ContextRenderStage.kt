@@ -68,6 +68,17 @@ class ContextRenderStage : PromptStage {
         val canonical = root.metadata[MetaKeys.METHOD_CANONICAL].orEmpty()
         val returnType = root.metadata[MetaKeys.METHOD_RETURN_TYPE].orEmpty()
         sb.appendLine("$returnType $canonical")
+        // STRATEGIE.md §6 — bloc « Code source » après la signature, frontière
+        // ouverte §3.1 (SUT_BOOTSTRAP). Conditionnel : si le port n'a pas pu
+        // lire le corps (port stub / cas dégradé §8bis), on ne rend rien plutôt
+        // que d'émettre un bloc ```java vide.
+        val body = root.metadata[MetaKeys.METHOD_BODY].orEmpty()
+        if (body.isNotEmpty()) {
+            sb.appendLine("Code source :")
+            sb.appendLine("```java")
+            sb.appendLine(body.trim())
+            sb.appendLine("```")
+        }
         // Champs étendus (throws / exceptions / branches / sources non-déterministes)
         // viendront quand l'introspector les exposera (cf RecursiveDeepStrategy
         // BLOC 2 note : « extension PSI dédiée requise »). Pas d'output vide.
@@ -212,6 +223,18 @@ class ContextRenderStage : PromptStage {
         sb.appendLine("# Sous-méthodes internes (information seulement, ne pas mocker)")
         for (m in internals) {
             sb.appendLine("## ${m.title}")
+            // STRATEGIE.md §6 + §3.2 — corps source des méthodes intra-SUT.
+            // Frontière fermée pour MOCK_EXTERNAL (§3.3 « STOP ») mais les internes
+            // sont par construction intra-SUT (cf RecursiveDeepStrategy §3.2 +
+            // enrichInternalLogicsWithDownstream qui ne synthétise que pour la
+            // hiérarchie SUT). Conditionnel pour les cas dégradés.
+            val body = m.metadata[MetaKeys.INTERNAL_METHOD_BODY].orEmpty()
+            if (body.isNotEmpty()) {
+                sb.appendLine("Code source :")
+                sb.appendLine("```java")
+                sb.appendLine(body.trim())
+                sb.appendLine("```")
+            }
             val summaries = m.metadata["internalCallSummaries"].orEmpty()
             if (summaries.isNotEmpty()) {
                 sb.appendLine("- appels-clés :")

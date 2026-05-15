@@ -96,12 +96,14 @@ class ExtractContextAction : AnAction() {
                 return@invokeLater
             }
             // V1 : LLM_CALL et ASK retombent sur COPY (étape 8 implémentera
-            // le routage complet). Documenté dans la doc de classe.
+            // le routage complet — pour l'instant, GenerateTestAction est une
+            // action séparée Alt+Shift+G, pas un routage via outputMode).
+            // Documenté dans la doc de classe.
             when (result.outputMode) {
                 ContextExtractorConfig.OutputMode.COPY,
                 ContextExtractorConfig.OutputMode.LLM_CALL,
                 ContextExtractorConfig.OutputMode.ASK ->
-                    PromptCopyDialog(project, result.prompt).show()
+                    PromptCopyDialog(project, result.tree, result.prompt).show()
             }
         }
     }

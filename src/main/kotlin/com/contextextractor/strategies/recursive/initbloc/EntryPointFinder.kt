@@ -102,7 +102,13 @@ class EntryPointFinder(
         val kind = if (isPostConstruct) InitPathKind.PUBLIC_POST_CONSTRUCT
                    else InitPathKind.PUBLIC_TRANSITIF
 
-        val externals = collectExternalCalls(current.chain)
+        // Extension downstream depuis le seed (= chain[0], l'assignment site).
+        // Étape 7 #3 — capture les callees intra-SUT pour visibilité utilisateur
+        // ET pour faire fuir les appels externes cachés derrière des helpers
+        // privés (ex : warmup → buildCache → loader.load()).
+        val downstream = collectDownstreamChain(current.chain.first())
+
+        val externals = collectExternalCalls(current.chain + downstream)
         val sideEffects = collectSideEffects(current.chain, fieldName)
         val returnsVoid = sig.returnType.fqName == "void"
 
@@ -123,8 +129,57 @@ class EntryPointFinder(
             parametersRequired = sig.parameters,
             externalCallsToStub = externals,
             sideEffects = sideEffects,
-            score = score
+            score = score,
+            downstreamChain = downstream
         )
+    }
+
+    // Étape 7 #3 — descend en aval depuis un seed intra-SUT, en suivant les
+    // appels intra-hiérarchie. S'arrête naturellement sur :
+    //   • appels externes (filtrés par `hierarchyFqns`),
+    //   • cycles (visited set),
+    //   • feuilles (méthodes qui n'appellent rien d'intra-SUT).
+    //
+    // **Pas de borne de profondeur artificielle** : la cible est un LLM local,
+    // la qualité des stubs prime sur l'économie de tokens (cf directive 7-#3).
+    // Un safety net `2 * maxGraphDepth` reste en place pour les SUT pathologiques
+    // — en pratique inutile car le filtrage intra-SUT + visited set s'arrêtent
+    // bien avant.
+    //
+    // **Le seed n'est PAS inclus** dans le retour — il vit déjà dans `chain[0]`.
+    // Output : `[appelleeDirect, ..., feuille]` (ordre BFS forward).
+    private fun collectDownstreamChain(seed: MethodKey): List<MethodKey> {
+        val out = mutableListOf<MethodKey>()
+        val visited = HashSet<MethodKey>().apply { add(seed) }
+        val queue = ArrayDeque<Pair<MethodKey, Int>>()
+        queue.add(seed to 0)
+        val safetyCap = maxGraphDepth * 2 + 4
+        while (queue.isNotEmpty()) {
+            val (cur, depth) = queue.poll()
+            if (depth > safetyCap) break
+            val sig = signatureLookup[cur] ?: continue
+            for (call in introspector.listMethodCalls(sig)) {
+                if (call.isStatic) continue
+                // Hors hiérarchie = appel externe — c'est un stub potentiel
+                // (capté par `collectExternalCalls`), pas une descente.
+                if (call.targetType !in hierarchyFqns) continue
+                val callee = resolveMethodKey(call) ?: continue
+                if (!visited.add(callee)) continue
+                out.add(callee)
+                queue.add(callee to depth + 1)
+            }
+        }
+        return out
+    }
+
+    // Reconstruction d'un MethodKey à partir d'un MethodCall — utilise le
+    // canonical de MethodSignature (`name(fqn1,fqn2,...)`). Si le lookup
+    // échoue (signature pas dans la hiérarchie connue), on retourne null —
+    // le BFS forward saute cette branche sans crasher.
+    private fun resolveMethodKey(call: MethodCall): MethodKey? {
+        val canonical = "${call.methodName}(${call.argTypes.joinToString(",")})"
+        val key = MethodKey(call.targetType, canonical)
+        return if (key in signatureLookup) key else null
     }
 
     private fun isAccessible(sig: MethodSignature): Boolean = when (sig.visibility) {

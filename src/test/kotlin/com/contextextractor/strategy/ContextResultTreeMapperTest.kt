@@ -49,9 +49,10 @@ class ContextResultTreeMapperTest {
         // fields (les 2 utiles : repository, cache)
         assertNotNull(tree.byId(NodeIds.field("$pkg.OrderService", "repository")))
         assertNotNull(tree.byId(NodeIds.field("$pkg.OrderService", "cache")))
-        // mocks
+        // mocks — DiscountRepository SEUL (réconciliation post-BLOC 7 retire
+        // DiscountCache car son champ a stratégie CALL_POST_CONSTRUCT, pas
+        // MOCKITO_INJECT_MOCKS — verrou EXPECTED_PROMPTS.md case91).
         assertNotNull(tree.byId(NodeIds.mock("$pkg.DiscountRepository")))
-        assertNotNull(tree.byId(NodeIds.mock("$pkg.DiscountCache")))
         // dto
         assertNotNull(tree.byId(NodeIds.dto("$pkg.OrderDTO")))
     }

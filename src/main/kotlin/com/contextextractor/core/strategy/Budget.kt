@@ -10,7 +10,13 @@ package com.contextextractor.core.strategy
 //   maxDtoCount=15            — nombre max de DTOs collectés
 //   maxMockCount=10           — nombre max de mocks collectés
 //   maxInternalLogicCount=12  — nombre max de méthodes internes visitées
-//   maxEstimatedTokens=8000   — coupure prompt avant troncature
+//   maxEstimatedTokens=50000  — coupure prompt avant troncature
+//
+// **Pourquoi 50_000 et pas 8_000** : la cible LLM est un modèle local (pas
+// d'API cloud → pas de coût par token). La qualité de l'extraction prime
+// sur l'économie. 50_000 tokens représentent un contexte large mais réaliste
+// pour la plupart des LLM modernes (Claude/GPT/Llama 3.x ont 100k+ de window).
+// La troncature ne se déclenche désormais que sur des SUT vraiment volumineux.
 //
 // **Validation** (cf [validated]) — verrou demandé étape 6 :
 //   • valeur < min sain → `IllegalArgumentException` avec clé YAML + valeur reçue
@@ -26,7 +32,7 @@ data class Budget(
     val maxDtoCount: Int = 15,
     val maxMockCount: Int = 10,
     val maxInternalLogicCount: Int = 12,
-    val maxEstimatedTokens: Int = 8000
+    val maxEstimatedTokens: Int = 50_000
 ) {
 
     // Retourne une copie validée. Le min est strict (throw si non respecté) ;
