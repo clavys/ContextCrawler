@@ -6,6 +6,7 @@ import com.contextextractor.core.extractor.ClassDescriptor
 import com.contextextractor.core.extractor.ClassField
 import com.contextextractor.core.extractor.CodeIntrospector
 import com.contextextractor.core.extractor.FieldAccess
+import com.contextextractor.core.extractor.FieldAssignment
 import com.contextextractor.core.extractor.MethodCall
 import com.contextextractor.core.extractor.MethodSignature
 import com.contextextractor.core.extractor.Parameter
@@ -19,16 +20,24 @@ import com.intellij.psi.JavaPsiFacade
 import com.intellij.psi.JavaRecursiveElementVisitor
 import com.intellij.psi.PsiAnnotation
 import com.intellij.psi.PsiAssignmentExpression
+import com.intellij.psi.PsiBinaryExpression
 import com.intellij.psi.PsiClass
 import com.intellij.psi.PsiClassObjectAccessExpression
+import com.intellij.psi.PsiConditionalExpression
 import com.intellij.psi.PsiElement
+import com.intellij.psi.PsiEnumConstant
 import com.intellij.psi.PsiField
+import com.intellij.psi.PsiIfStatement
+import com.intellij.psi.PsiLiteralExpression
+import com.intellij.psi.PsiLoopStatement
 import com.intellij.psi.PsiManager
 import com.intellij.psi.PsiMethod
 import com.intellij.psi.PsiMethodCallExpression
 import com.intellij.psi.PsiModifier
 import com.intellij.psi.PsiModifierList
 import com.intellij.psi.PsiReferenceExpression
+import com.intellij.psi.PsiSwitchBlock
+import com.intellij.psi.PsiThisExpression
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.util.PsiTreeUtil
 
@@ -157,19 +166,126 @@ class JavaPsiIntrospector(
         return assignment.lExpression === this
     }
 
+    // -- 5bis. listFieldAssignments -------------------------------------------
+
+    override fun listFieldAssignments(method: MethodSignature): List<FieldAssignment> {
+        val psiMethod = methodCache[method] ?: return emptyList()
+        val body = psiMethod.body ?: return emptyList()
+        val collected = mutableListOf<FieldAssignment>()
+        body.accept(object : JavaRecursiveElementVisitor() {
+            override fun visitAssignmentExpression(expression: PsiAssignmentExpression) {
+                super.visitAssignmentExpression(expression)
+                val target = expression.lExpression as? PsiReferenceExpression ?: return
+                val resolvedField = target.resolve() as? PsiField ?: return
+                val ownerType = resolvedField.containingClass?.qualifiedName ?: return
+                val rhs = expression.rExpression
+                val rhsExpression = rhs?.text.orEmpty()
+                val rhsType = rhs?.type?.let { PsiTypeMapper.toResolved(it) }
+                val nearestCondition = nearestConditional(expression)
+                val isConditional = nearestCondition != null
+                val conditionIsNullCheck =
+                    isConditional && conditionChecksFieldNull(nearestCondition, resolvedField.name)
+                collected.add(
+                    FieldAssignment(
+                        ownerType = ownerType,
+                        fieldName = resolvedField.name,
+                        rhsExpression = rhsExpression,
+                        rhsType = rhsType,
+                        isConditional = isConditional,
+                        conditionIsNullCheck = conditionIsNullCheck
+                    )
+                )
+            }
+        })
+        return collected
+    }
+
+    // Trouve le PsiIfStatement / PsiLoopStatement / PsiSwitchBlock /
+    // PsiConditionalExpression englobant le plus proche — null si l'assignation
+    // est au top-level du corps de méthode.
+    private fun nearestConditional(element: PsiElement): PsiElement? {
+        var current: PsiElement? = element.parent
+        while (current != null) {
+            when (current) {
+                is PsiIfStatement,
+                is PsiLoopStatement,
+                is PsiSwitchBlock,
+                is PsiConditionalExpression -> return current
+                is PsiMethod -> return null
+            }
+            current = current.parent
+        }
+        return null
+    }
+
+    // Vrai ssi la condition contient `<fieldName> == null` ou `null == <fieldName>`
+    // — couvre le pattern lazy-init `if (this.x == null) this.x = ...`.
+    // Le ternaire `(this.x == null) ? new X() : this.x` tombe ici aussi via la
+    // PsiConditionalExpression englobante. Volontairement strict : pas de
+    // détection des patterns Optional ou ternaires composés (V1).
+    private fun conditionChecksFieldNull(conditional: PsiElement?, fieldName: String): Boolean {
+        val condition: PsiElement = when (conditional) {
+            is PsiIfStatement -> conditional.condition ?: return false
+            is PsiConditionalExpression -> conditional.condition
+            is PsiLoopStatement -> return false // peu de cas pratiques pour V1
+            is PsiSwitchBlock -> return false
+            else -> return false
+        }
+        var found = false
+        condition.accept(object : JavaRecursiveElementVisitor() {
+            override fun visitBinaryExpression(expression: PsiBinaryExpression) {
+                super.visitBinaryExpression(expression)
+                if (expression.operationSign.text != "==") return
+                val left = expression.lOperand
+                val right = expression.rOperand ?: return
+                val (refSide, otherSide) = when {
+                    isFieldRef(left, fieldName) -> left to right
+                    isFieldRef(right, fieldName) -> right to left
+                    else -> return
+                }
+                @Suppress("UNUSED_VARIABLE")
+                val unused = refSide
+                if (otherSide is PsiLiteralExpression && otherSide.value == null) found = true
+            }
+        })
+        return found
+    }
+
+    private fun isFieldRef(expr: PsiElement?, fieldName: String): Boolean {
+        val ref = expr as? PsiReferenceExpression ?: return false
+        if (ref.referenceName != fieldName) return false
+        // Accepte `this.x` ou `x` non qualifié — les deux résolvent vers le
+        // même PsiField si le champ existe.
+        val qualifier = ref.qualifierExpression
+        if (qualifier != null && qualifier !is PsiThisExpression) return false
+        val resolved = ref.resolve() as? PsiField ?: return false
+        return resolved.name == fieldName
+    }
+
     // -- 6. listFields --------------------------------------------------------
 
     override fun listFields(cls: ClassDescriptor): List<ClassField> {
         val psiClass = findPsiClass(cls.fqn) ?: return emptyList()
-        return psiClass.fields.map { field ->
+        // Filtrer les PsiEnumConstant — ils sont retournés par PsiClass.fields
+        // pour les enums, mais ne sont pas des champs d'instance au sens BLOC 3.
+        return psiClass.fields.filter { it !is PsiEnumConstant }.map { field ->
             ClassField(
                 name = field.name,
                 type = PsiTypeMapper.toResolved(field.type),
                 visibility = field.visibilityKeyword(),
                 annotations = field.modifierList?.annotationFqns().orEmpty(),
-                declaredIn = cls.fqn
+                declaredIn = cls.fqn,
+                isFinal = field.hasModifierProperty(PsiModifier.FINAL),
+                initializerExpression = field.initializer?.text
             )
         }
+    }
+
+    // -- 6bis. listMethods ----------------------------------------------------
+
+    override fun listMethods(cls: ClassDescriptor): List<MethodSignature> {
+        val psiClass = findPsiClass(cls.fqn) ?: return emptyList()
+        return psiClass.methods.map { it.toSignature() }
     }
 
     // -- 7. listSuperClasses --------------------------------------------------
@@ -222,6 +338,19 @@ class JavaPsiIntrospector(
 
     private fun PsiClass.toDescriptor(): ClassDescriptor {
         val fqn = qualifiedName ?: name ?: ""
+        val isEnumClass = isEnum
+        val isSealedClass = hasModifierProperty(PsiModifier.SEALED)
+        // PsiClass.permitsList est exposé via permitsListTypes() côté plate-forme
+        // — on extrait les FQN des types autorisés. Vide pour une classe non
+        // sealed.
+        val permitted: List<String> = if (isSealedClass) {
+            permitsListTypes.mapNotNull { it.resolve()?.qualifiedName }
+        } else emptyList()
+        // Constantes d'enum dans l'ordre de déclaration. PsiClass.fields contient
+        // à la fois les PsiEnumConstant et les vrais champs déclarés ; on filtre.
+        val enumNames: List<String> = if (isEnumClass) {
+            fields.filterIsInstance<PsiEnumConstant>().map { it.name }
+        } else emptyList()
         return ClassDescriptor(
             fqn = fqn,
             simpleName = name ?: fqn.substringAfterLast('.'),
@@ -230,17 +359,22 @@ class JavaPsiIntrospector(
             isAbstract = hasModifierProperty(PsiModifier.ABSTRACT),
             isInterface = isInterface,
             isRecord = isRecord,
-            isSealed = hasModifierProperty(PsiModifier.SEALED),
-            isEnum = isEnum,
+            isSealed = isSealedClass,
+            isEnum = isEnumClass,
             annotations = modifierList?.annotationFqns().orEmpty(),
             visibility = visibilityKeyword(),
-            packageName = fqn.substringBeforeLast('.', missingDelimiterValue = "")
+            packageName = fqn.substringBeforeLast('.', missingDelimiterValue = ""),
+            permittedSubclasses = permitted,
+            enumValues = enumNames
         )
     }
 
     private fun PsiMethod.toSignature(): MethodSignature {
+        // Convention « <init> » pour les constructeurs — alignée sur les fixtures
+        // de FakeIntrospector et utilisée par RecursiveDeepStrategy pour repérer
+        // les constructeurs candidats sans dépendre du nom de la classe.
         val signature = MethodSignature(
-            name = name,
+            name = if (isConstructor) "<init>" else name,
             returnType = returnType?.let { PsiTypeMapper.toResolved(it) }
                 ?: ResolvedType("void", "void"),
             parameters = parameterList.parameters.map { p ->
@@ -252,7 +386,8 @@ class JavaPsiIntrospector(
             },
             annotations = modifierList.annotationFqns(),
             declaredThrows = throwsList.referencedTypes.mapNotNull { it.canonicalText },
-            visibility = visibilityKeyword()
+            visibility = visibilityKeyword(),
+            isStatic = hasModifierProperty(PsiModifier.STATIC)
         )
         // On garde la table de correspondance signature→PsiMethod pour les
         // appels ultérieurs (listMethodCalls, listFieldAccesses, readMethodBody).

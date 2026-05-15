@@ -56,6 +56,11 @@ dependencies {
         testFramework(TestFrameworkType.Platform, configurationName = "integrationTestImplementation")
     }
 
+    // YAML parsing pour `.contextextractor.yml` (étape 6 / YamlProjectConfigSource).
+    // Dépendance explicite plutôt que de compter sur celle embarquée par la plateforme
+    // IntelliJ — la plateforme peut la repackager / la masquer suivant la version.
+    implementation("org.yaml:snakeyaml:2.3")
+
     // Tests pur Kotlin (core/, fakes) — JUnit 5.
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
     testImplementation("com.tngtech.archunit:archunit-junit5:1.3.0")

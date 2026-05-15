@@ -14,7 +14,52 @@
 
     <!-- Actions, services, settings, tool window: ajoutés étape par étape (6→8). -->
 
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- Settings persistantes (étape 6-γ) — application-level pour rester
+             accessible depuis n'importe quel projet. -->
+        <applicationService
+            serviceImplementation="com.contextextractor.adapters.ide.ContextCrawlerSettings"/>
+
+        <!-- Settings UI panel : Settings -> Tools -> ContextCrawler. -->
+        <applicationConfigurable
+            parentId="tools"
+            id="com.contextextractor.settings"
+            displayName="ContextCrawler"
+            instance="com.contextextractor.ide.settings.ContextCrawlerConfigurable"/>
+
+        <!-- Service d'extraction — étape 7. Project-level pour partager le
+             cycle de vie avec le projet ouvert. -->
+        <projectService
+            serviceImplementation="com.contextextractor.ide.service.ContextExtractorService"/>
+    </extensions>
+
     <extensions defaultExtensionNs="org.jetbrains.kotlin">
         <supportsKotlinPluginMode supportsK2="true"/>
     </extensions>
+
+    <!-- Actions — étape 7 (mode COPY) + étape 8 (mode LLM_CALL).
+         Toutes deux disponibles depuis Tools menu + clic droit éditeur. -->
+    <actions>
+        <action
+            id="com.contextextractor.ExtractContextAction"
+            class="com.contextextractor.ide.action.ExtractContextAction"
+            text="Extract Method Context (ContextCrawler)"
+            description="Analyzes the method under cursor and generates an LLM prompt for a JUnit 5 test.">
+            <keyboard-shortcut keymap="$default" first-keystroke="alt G"/>
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
+
+        <!-- Étape 8 — mode LLM_CALL via ClaudeCodeClient (CLI locale).
+             Délègue l'appel au binaire `claude` du PATH ; aucune clé API. -->
+        <action
+            id="com.contextextractor.GenerateTestAction"
+            class="com.contextextractor.ide.action.GenerateTestAction"
+            text="Generate Test via Claude (ContextCrawler)"
+            description="Extracts method context and calls the Claude CLI to generate a JUnit 5 test.">
+            <keyboard-shortcut keymap="$default" first-keystroke="alt shift G"/>
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
+    </actions>
 </idea-plugin>

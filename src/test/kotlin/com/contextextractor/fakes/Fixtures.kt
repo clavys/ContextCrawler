@@ -149,7 +149,10 @@ object Fixtures {
                 """.trimIndent()
             ) {
                 reads("$pkg.OrderService", "repository")
-                writes("$pkg.OrderService", "cache")
+                // BLOC 7 a besoin d'un FieldAssignment (pas seulement d'un
+                // FieldAccess write=true) pour que SourceCollector détecte
+                // primeCache comme MethodInitializer du champ `cache`.
+                assigns("$pkg.OrderService", "cache", rhsExpression = "c")
                 calls("$pkg.DiscountRepository", "findAllActive")
                 calls("$pkg.DiscountCache", "warm", "java.util.List")
             }
@@ -243,7 +246,7 @@ object Fixtures {
                 param("timeoutMs", T("int"))
                 param("region", T("java.lang.String"))
                 reads("$pkg.OrderService", "pricingGateway")
-                writes("$pkg.OrderService", "config")
+                assigns("$pkg.OrderService", "config", rhsExpression = "c")
                 calls("$pkg.PricingGateway", "fetchRate", "java.lang.String")
                 calls("$pkg.Config", "setRate", "double")
             }
@@ -349,7 +352,7 @@ object Fixtures {
                 annotations = listOf("java.lang.Override"),
                 body = "this.cache = buildCache();"
             ) {
-                writes("$pkg.AbstractCacheService", "cache")
+                assigns("$pkg.AbstractCacheService", "cache", rhsExpression = "buildCache()")
                 calls("$pkg.OrderService", "buildCache")
             }
             method(
@@ -431,7 +434,12 @@ object Fixtures {
                 body = "if (cache == null) { cache = new Cache(); }"
             ) {
                 reads("$pkg.OrderService", "cache")
-                writes("$pkg.OrderService", "cache")
+                assigns(
+                    "$pkg.OrderService", "cache",
+                    rhsExpression = "new Cache()",
+                    isConditional = true,
+                    conditionIsNullCheck = true
+                )
             }
             method(
                 "calculate",
@@ -496,7 +504,7 @@ object Fixtures {
                 body = "this.cache = new Cache(c);"
             ) {
                 param("c", T("$pkg.Config"))
-                writes("$pkg.OrderService", "cache")
+                assigns("$pkg.OrderService", "cache", rhsExpression = "new Cache(c)")
             }
             method(
                 "calculate",
