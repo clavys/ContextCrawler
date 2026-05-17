@@ -12,10 +12,14 @@ import com.contextextractor.core.strategy.StrategyInput
 import com.contextextractor.core.extractor.ClassDescriptor
 import com.contextextractor.core.extractor.ClassField
 import com.contextextractor.core.extractor.CodeIntrospector
+import com.contextextractor.core.extractor.MethodBodyAnalysis
 import com.contextextractor.core.extractor.MethodCall
 import com.contextextractor.core.extractor.MethodSignature
+import com.contextextractor.core.extractor.Parameter
 import com.contextextractor.core.extractor.SymbolKind
 import com.contextextractor.core.model.BuilderInfo
+import com.contextextractor.core.model.CaughtException
+import com.contextextractor.core.model.ConditionalBranch
 import com.contextextractor.core.model.BuilderMethodInfo
 import com.contextextractor.core.model.ConstructionPattern
 import com.contextextractor.core.model.ContextResult
@@ -35,6 +39,7 @@ import com.contextextractor.core.model.StaticCall
 import com.contextextractor.core.model.StaticCallInfo
 import com.contextextractor.core.model.TargetMethodAnalysis
 import com.contextextractor.core.model.TestabilityDiagnostic
+import com.contextextractor.core.model.ThrownException
 import com.contextextractor.core.model.init.InitStrategy
 import com.contextextractor.core.model.init.MethodKey
 import com.contextextractor.core.model.init.POST_CONSTRUCT_FQNS
@@ -95,7 +100,10 @@ class RecursiveDeepStrategy : ContextStrategy {
         // ── BLOC 2 : ANALYSE DE LA MÉTHODE CIBLE ──────────────────────────────
         val targetCalls = introspector.listMethodCalls(targetMethod)
         val targetBody = introspector.readMethodBody(targetMethod)
-        val targetAnalysis = analyzeTargetMethod(targetMethod, targetCalls, targetBody)
+        val targetBodyAnalysis = introspector.analyzeMethodBody(targetMethod)
+        val targetAnalysis = analyzeTargetMethod(
+            targetMethod, targetCalls, targetBody, targetBodyAnalysis
+        )
 
         // ── BLOC 3 : INVENTAIRE DES CHAMPS UTILES ─────────────────────────────
         val activeFields = introspector.listFieldAccesses(targetMethod)
@@ -257,11 +265,15 @@ class RecursiveDeepStrategy : ContextStrategy {
                 .filter { !it.isStatic }
                 .map { c -> "${c.targetType}.${c.methodName}" }
                 .distinct()
-            // §3.2 — la méthode est intra-SUT, frontière ouverte : on lit le corps.
+            // §3.2 — la méthode est intra-SUT, frontière ouverte : on lit le
+            // corps et ses exceptions structurées.
             val body = introspector.readMethodBody(sig)
+            val bodyAnalysis = introspector.analyzeMethodBody(sig)
             out[key] = InternalLogic(
                 signature = sig,
                 callSummaries = callSummaries,
+                thrownExceptions = bodyAnalysis.thrownAsModel(),
+                caughtExceptions = bodyAnalysis.caughtAsModel(),
                 body = body
             )
         }
@@ -422,7 +434,8 @@ class RecursiveDeepStrategy : ContextStrategy {
     private fun analyzeTargetMethod(
         targetMethod: MethodSignature,
         calls: List<MethodCall>,
-        body: String
+        body: String,
+        bodyAnalysis: MethodBodyAnalysis
     ): TargetMethodAnalysis {
         val instanceCalls = calls.filterNot { it.isStatic }.map {
             InstanceCall(it.targetType, "", it.methodName, it.argTypes)
@@ -430,18 +443,33 @@ class RecursiveDeepStrategy : ContextStrategy {
         val staticCalls = calls.filter { it.isStatic }.map {
             StaticCall(it.targetType, it.methodName, it.argTypes)
         }
-        // Note 4c : instantiations / lambdas / thrownExceptions / caughtExceptions
-        // / conditionalBranches / nonDeterministicSources nécessitent des accès PSI
-        // dédiés (NewExpression, ThrowStatement…) que le port ne fournit pas
-        // encore. Restent vides ; à ajouter dès qu'un test concret les exige
-        // (cf. consigne « vigilance BLOC 2 » de l'étape 4c).
+        // §3.1 BLOC 2 — éléments structurels du corps fournis par
+        // CodeIntrospector.analyzeMethodBody (un seul parcours AST). Les types
+        // extractor (ThrownExceptionRef…) sont traduits vers leurs équivalents
+        // model — même pattern que MethodCall → InstanceCall ci-dessus.
         return TargetMethodAnalysis(
             signature = targetMethod,
             instanceCalls = instanceCalls,
             staticCalls = staticCalls,
+            instantiations = bodyAnalysis.instantiations,
+            expectedLambdas = bodyAnalysis.expectedLambdas,
+            thrownExceptions = bodyAnalysis.thrownAsModel(),
+            caughtExceptions = bodyAnalysis.caughtAsModel(),
+            conditionalBranches = bodyAnalysis.conditionalBranches.map {
+                ConditionalBranch(it.kind, it.condition, it.constants)
+            },
+            nonDeterministicSources = bodyAnalysis.nonDeterministicSources,
             body = body
         )
     }
+
+    // Traduction extractor → model des exceptions du corps — partagée entre
+    // BLOC 2 (méthode cible) et §3.2 (sous-méthodes internes).
+    private fun MethodBodyAnalysis.thrownAsModel(): List<ThrownException> =
+        thrownExceptions.map { ThrownException(it.typeFqn, it.message) }
+
+    private fun MethodBodyAnalysis.caughtAsModel(): List<CaughtException> =
+        caughtExceptions.map { CaughtException(it.types, it.callsInCatch) }
 
     // ──────────────────────────────────────────────────────────────────────────
     // BLOC 3
@@ -473,7 +501,12 @@ class RecursiveDeepStrategy : ContextStrategy {
         sut: ClassDescriptor
     ): SelectedConstructor {
         val constructors = introspector.listMethods(sut).filter { it.name == "<init>" }
-        if (constructors.isEmpty()) return SelectedConstructor(parameters = emptyList())
+        if (constructors.isEmpty()) {
+            // §8bis.6 — Lombok actif mais constructeur généré non visible dans
+            // PSI (plugin Lombok désactivé) : on le synthétise depuis les champs.
+            synthesizeLombokConstructor(introspector, sut)?.let { return it }
+            return SelectedConstructor(parameters = emptyList())
+        }
 
         constructors.firstOrNull { hasAnnotation(it, "org.springframework.beans.factory.annotation.Autowired") }
             ?.let { return it.toSelected("org.springframework.beans.factory.annotation.Autowired") }
@@ -481,10 +514,40 @@ class RecursiveDeepStrategy : ContextStrategy {
             ?.let { return it.toSelected("com.fasterxml.jackson.annotation.JsonCreator") }
         constructors.firstOrNull { hasAnnotation(it, "java.beans.ConstructorProperties") }
             ?.let { return it.toSelected("java.beans.ConstructorProperties") }
-        // Lombok @RequiredArgsConstructor / @AllArgsConstructor — sous-étape 4c+.
 
         if (constructors.size == 1) return constructors.single().toSelected(null)
         return constructors.maxBy { it.parameters.size }.toSelected(null)
+    }
+
+    // §3.6 + §8bis.6 — Lombok @RequiredArgsConstructor / @AllArgsConstructor.
+    // Quand le plugin Lombok IntelliJ est actif, le constructeur généré apparaît
+    // déjà dans listMethods (LightMethod) et cette fonction n'est pas appelée.
+    // Quand il est inactif, PSI n'expose aucun constructeur — on simule celui
+    // que Lombok produirait :
+    //   • @AllArgsConstructor      → tous les champs d'instance ;
+    //   • @RequiredArgsConstructor → champs `final` non initialisés + @NonNull.
+    // Retourne null si aucune des deux annotations n'est présente sur le SUT.
+    private fun synthesizeLombokConstructor(
+        introspector: CodeIntrospector,
+        sut: ClassDescriptor
+    ): SelectedConstructor? {
+        val allArgs = LOMBOK_ALL_ARGS_FQN in sut.annotations
+        val requiredArgs = LOMBOK_REQUIRED_ARGS_FQN in sut.annotations
+        if (!allArgs && !requiredArgs) return null
+
+        val fields = introspector.listFields(sut)
+        val selected = if (allArgs) {
+            fields
+        } else {
+            fields.filter { f ->
+                (f.isFinal && f.initializerExpression == null) ||
+                    f.annotations.any { it == LOMBOK_NON_NULL_FQN }
+            }
+        }
+        return SelectedConstructor(
+            parameters = selected.map { Parameter(name = it.name, type = it.type) },
+            triggerAnnotation = if (allArgs) LOMBOK_ALL_ARGS_FQN else LOMBOK_REQUIRED_ARGS_FQN
+        )
     }
 
     private fun hasAnnotation(method: MethodSignature, fqn: String): Boolean =
@@ -582,8 +645,14 @@ class RecursiveDeepStrategy : ContextStrategy {
             }
         }
 
-        // 6d — instanciations : différé (extension PSI dédiée requise — voir BLOC 2 note).
-        // Aucun test 4c ne l'exige aujourd'hui.
+        // 6d — instanciations détectées dans le corps (§3.1 BLOC 6d). Un `new X()`
+        // dont le type est un DTO doit apparaître en « # Structures de données »
+        // même s'il n'est ni champ, ni paramètre, ni type de retour. Les types
+        // non-DTO (collections, java.*) sont filtrés par le classifier.
+        targetAnalysis.instantiations.forEach { type ->
+            recurseDispatch(ctx, type.fqName, CallerContext.INSTANTIATION,
+                methodToCall = null, depth = depth + 1)
+        }
 
         // 6e — type de retour de methodeCible
         recurseDispatch(ctx, targetMethod.returnType.fqName, CallerContext.RETURN_OF_METHOD,
@@ -671,12 +740,14 @@ class RecursiveDeepStrategy : ContextStrategy {
         // pour rendu dans la layer CONTEXT. Frontière intra-SUT (cette méthode
         // n'est appelée que pour des classes de la hiérarchie du SUT).
         val body = ctx.introspector.readMethodBody(method)
+        val bodyAnalysis = ctx.introspector.analyzeMethodBody(method)
 
         val logicKey = "$classFqn#${method.canonical()}"
         ctx.internalLogics[logicKey] = InternalLogic(
             signature = method,
             callSummaries = callSummaries,
-            // thrownExceptions / caughtExceptions : extension port nécessaire.
+            thrownExceptions = bodyAnalysis.thrownAsModel(),
+            caughtExceptions = bodyAnalysis.caughtAsModel(),
             body = body
         )
 
@@ -694,6 +765,13 @@ class RecursiveDeepStrategy : ContextStrategy {
             } else {
                 recurseDispatch(ctx, call.targetType, CallerContext.CALL_TARGET, calledMethod, depth + 1)
             }
+        }
+
+        // §3.2 — `new X()` dans le corps interne : un DTO instancié ici doit
+        // être crawlé en DATA_STRUCTURE. Types non-DTO filtrés par le classifier.
+        bodyAnalysis.instantiations.forEach { type ->
+            recurseDispatch(ctx, type.fqName, CallerContext.INSTANTIATION,
+                methodToCall = null, depth = depth + 1)
         }
     }
 
@@ -1149,6 +1227,8 @@ class RecursiveDeepStrategy : ContextStrategy {
         private const val LOMBOK_VALUE_FQN = "lombok.Value"
         private const val LOMBOK_DATA_FQN = "lombok.Data"
         private const val LOMBOK_ALL_ARGS_FQN = "lombok.AllArgsConstructor"
+        private const val LOMBOK_REQUIRED_ARGS_FQN = "lombok.RequiredArgsConstructor"
+        private const val LOMBOK_NON_NULL_FQN = "lombok.NonNull"
         private const val JSON_CREATOR_FQN = "com.fasterxml.jackson.annotation.JsonCreator"
 
         // Noms conventionnels de méthodes de fabrique (§3.4 « Si ∃ méthode

@@ -62,6 +62,24 @@ object MetaKeys {
     const val METHOD_RETURN_TYPE = "methodReturnType"
     const val METHOD_PARAMS = "methodParams"              // 'name:typeFqn' séparés par ', '
 
+    // BLOC 2 — éléments structurels du corps (STRATEGIE.md §3.1 / §6). Chaque
+    // clé est absente si la liste correspondante est vide ⇒ le renderer ne
+    // produit aucune puce parasite.
+    const val METHOD_THROWS_DECLARED = "methodThrowsDeclared"   // séparés par ', '
+    const val METHOD_THROWN_BODY = "methodThrownBody"           // séparés par ', '
+    const val METHOD_CAUGHT = "methodCaught"                    // séparés par ', '
+    const val METHOD_BRANCHES = "methodBranches"                // séparées par '\n'
+    const val METHOD_NON_DETERMINISTIC = "methodNonDeterministic" // séparées par ', '
+    const val METHOD_LAMBDAS = "methodLambdas"                  // séparées par ', '
+    // Exceptions des sous-méthodes internes (§3.2) — portées sur les nœuds INTERNAL_METHOD.
+    const val INTERNAL_METHOD_THROWN = "internalMethodThrown"   // séparés par ', '
+    const val INTERNAL_METHOD_CAUGHT = "internalMethodCaught"   // séparés par ', '
+
+    // BLOC 4 — constructeur sélectionné du SUT (STRATEGIE.md §3.6 / §6). Porté
+    // sur le nœud root pour rendre `new SUT(...)` avec les vrais paramètres.
+    const val SUT_CTOR_PARAMS = "sutCtorParams"           // 'typeFqn name' séparés par ', '
+    const val SUT_SUPER_ARGS = "sutSuperArgs"             // séparés par ', '
+
     // Corps source des méthodes intra-SUT — STRATEGIE.md §3.1 (SUT_BOOTSTRAP)
     // et §3.2 (INTERNAL_LOGIC). Frontière fermée pour MOCK_EXTERNAL (§3.3 « STOP :
     // ne jamais lire le corps des méthodes externes »). Vide si non capturé.

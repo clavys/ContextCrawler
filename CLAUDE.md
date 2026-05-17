@@ -173,7 +173,7 @@ ce format **strict** :
 - [ ] `targetMethod.signature.nom == "calculate"`
 - [ ] `champs` contient `{nom: "cache", type: "DiscountCache"}`
 - [ ] `protocoleInit["cache"].strategieRecommandee` est `CALL_POST_CONSTRUCT`
-- [ ] `protocoleInit["cache"].strategieRecommandee.methode.nom == "init"`
+- [ ] `protocoleInit["cache"].strategieRecommandl'étapeee.methode.nom == "init"`
 - [ ] `mocks` contient `DiscountRepository`
 - [ ] `mocks` ne contient PAS `DiscountCache` (auto-construit)
 

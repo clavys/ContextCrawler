@@ -90,6 +90,11 @@ intellijPlatform {
     pluginConfiguration {
         ideaVersion {
             sinceBuild = providers.gradleProperty("pluginSinceBuild")
+            // Pas de borne haute : sans cela l'IntelliJ Platform Gradle Plugin
+            // pose `until-build=261.*` et le plugin refuserait de se charger sur
+            // toute version d'IDE postérieure à 2026.1. API plate-forme utilisée
+            // stable ⇒ ouverture de la borne haute assumée pour la V1.
+            untilBuild = provider { null }
         }
 
         changeNotes = """

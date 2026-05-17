@@ -34,7 +34,7 @@ class ContextRenderStage : PromptStage {
 
         renderClassHeader(sb, root)
         renderTargetMethodSection(sb, root)
-        renderInstantiationPlaceholder(sb, root)
+        renderInstantiationSection(sb, root)
         renderInitProtocol(sb, tree.ofKind(NodeKind.FIELD))
         renderMocks(sb, tree.ofKind(NodeKind.MOCK))
         renderInternalMethods(sb, tree.ofKind(NodeKind.INTERNAL_METHOD))
@@ -79,21 +79,41 @@ class ContextRenderStage : PromptStage {
             sb.appendLine(body.trim())
             sb.appendLine("```")
         }
-        // Champs étendus (throws / exceptions / branches / sources non-déterministes)
-        // viendront quand l'introspector les exposera (cf RecursiveDeepStrategy
-        // BLOC 2 note : « extension PSI dédiée requise »). Pas d'output vide.
+        // §3.1 BLOC 2 / §6 — éléments structurels du corps. Chaque puce n'est
+        // émise que si la metadata existe (le mapper ne la pose pas pour une
+        // liste vide) ⇒ aucune puce parasite. Le corps en clair ci-dessus reste
+        // la source primaire ; ces puces sont des indices ciblés pour le LLM.
+        renderBullet(sb, "throws", root.metadata[MetaKeys.METHOD_THROWS_DECLARED])
+        renderBullet(sb, "exceptions lancées dans le corps", root.metadata[MetaKeys.METHOD_THROWN_BODY])
+        renderBullet(sb, "exceptions catchées", root.metadata[MetaKeys.METHOD_CAUGHT])
+        renderBullet(sb, "sources non-déterministes", root.metadata[MetaKeys.METHOD_NON_DETERMINISTIC])
+        renderBullet(sb, "lambdas attendues", root.metadata[MetaKeys.METHOD_LAMBDAS])
+        // Branches : une par ligne — la condition peut contenir des virgules.
+        val branches = root.metadata[MetaKeys.METHOD_BRANCHES].orEmpty()
+        if (branches.isNotEmpty()) {
+            sb.appendLine("- branches :")
+            branches.split('\n').forEach { sb.appendLine("  - $it") }
+        }
         sb.appendLine()
+    }
+
+    // Puce `- {label} : {value}` — émise seulement si `value` est non vide.
+    private fun renderBullet(sb: StringBuilder, label: String, value: String?) {
+        if (!value.isNullOrEmpty()) sb.appendLine("- $label : $value")
     }
 
     // ── # Instanciation du SUT ───────────────────────────────────────────────
 
-    private fun renderInstantiationPlaceholder(sb: StringBuilder, root: ContextNode) {
-        // Le détail (ctor sélectionné, super args) n'est pas encore porté dans
-        // les nœuds — il vit dans ContextResult.instantiationPlan, non mappé en
-        // V1 (pas de NodeKind.CONSTRUCTOR construit par le mapper). Sortie
-        // minimale pour respecter la structure §6.
+    private fun renderInstantiationSection(sb: StringBuilder, root: ContextNode) {
         sb.appendLine("# Instanciation du SUT")
-        sb.appendLine("new ${root.title.substringBefore('#')}()")
+        val classFqn = root.title.substringBefore('#')
+        // §3.6 — paramètres réels du constructeur sélectionné (BLOC 4). Chaîne
+        // vide ⇒ `new SUT()`. Ce bloc décrit le constructeur tel que le SUT
+        // l'expose ; Mockito @InjectMocks reste la voie d'injection des mocks.
+        val ctorParams = root.metadata[MetaKeys.SUT_CTOR_PARAMS].orEmpty()
+        sb.appendLine("new $classFqn($ctorParams)")
+        val superArgs = root.metadata[MetaKeys.SUT_SUPER_ARGS].orEmpty()
+        if (superArgs.isNotEmpty()) sb.appendLine("super($superArgs)")
         sb.appendLine()
     }
 
@@ -235,6 +255,9 @@ class ContextRenderStage : PromptStage {
                 sb.appendLine(body.trim())
                 sb.appendLine("```")
             }
+            // §6 — exceptions de la sous-méthode (frontière intra-SUT ouverte).
+            renderBullet(sb, "lance", m.metadata[MetaKeys.INTERNAL_METHOD_THROWN])
+            renderBullet(sb, "catch", m.metadata[MetaKeys.INTERNAL_METHOD_CAUGHT])
             val summaries = m.metadata["internalCallSummaries"].orEmpty()
             if (summaries.isNotEmpty()) {
                 sb.appendLine("- appels-clés :")

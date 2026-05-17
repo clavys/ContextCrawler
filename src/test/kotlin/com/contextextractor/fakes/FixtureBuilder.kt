@@ -4,12 +4,16 @@ import com.contextextractor.core.extractor.AnnotatedTarget
 import com.contextextractor.core.extractor.AnnotationRef
 import com.contextextractor.core.extractor.ClassDescriptor
 import com.contextextractor.core.extractor.ClassField
+import com.contextextractor.core.extractor.CaughtExceptionRef
+import com.contextextractor.core.extractor.ConditionalBranchRef
 import com.contextextractor.core.extractor.FieldAccess
 import com.contextextractor.core.extractor.FieldAssignment
+import com.contextextractor.core.extractor.MethodBodyAnalysis
 import com.contextextractor.core.extractor.MethodCall
 import com.contextextractor.core.extractor.MethodSignature
 import com.contextextractor.core.extractor.Parameter
 import com.contextextractor.core.extractor.ResolvedType
+import com.contextextractor.core.extractor.ThrownExceptionRef
 
 // DSL fluent pour construire un FakeIntrospector. Pensé pour ressembler à
 // la lecture d'un fichier Java :
@@ -180,6 +184,16 @@ class MethodScope(
     private val pendingAccesses = mutableListOf<FieldAccess>()
     private val pendingAssignments = mutableListOf<FieldAssignment>()
 
+    // BLOC 2 — éléments structurels du corps (STRATEGIE.md §3.1). Alimentent
+    // FakeIntrospector.analyzeMethodBody. Vides par défaut : une méthode qui
+    // n'en déclare aucun produit un MethodBodyAnalysis() neutre.
+    private val bodyInstantiations = mutableListOf<ResolvedType>()
+    private val bodyLambdas = mutableListOf<String>()
+    private val bodyThrown = mutableListOf<ThrownExceptionRef>()
+    private val bodyCaught = mutableListOf<CaughtExceptionRef>()
+    private val bodyBranches = mutableListOf<ConditionalBranchRef>()
+    private val bodyNonDet = mutableListOf<String>()
+
     fun param(name: String, type: ResolvedType, annotations: List<String> = emptyList()) {
         params.add(Parameter(name, type, annotations))
     }
@@ -236,6 +250,36 @@ class MethodScope(
         )
     }
 
+    // ── BLOC 2 — verbes d'analyse du corps (§3.1) ────────────────────────────
+
+    // `new {fqName}(...)` détecté dans le corps — crawlé en DATA_STRUCTURE (§6d).
+    fun instantiates(fqName: String) {
+        bodyInstantiations.add(T(fqName))
+    }
+
+    // `throw new {typeFqn}("message")` — message non-null si littéral constant.
+    fun throwsInBody(typeFqn: String, message: String? = null) {
+        bodyThrown.add(ThrownExceptionRef(typeFqn, message))
+    }
+
+    // Bloc `catch` — `types` supporte le multi-catch.
+    fun catchesInBody(vararg types: String) {
+        bodyCaught.add(CaughtExceptionRef(types.toList()))
+    }
+
+    // Branche conditionnelle — kind ∈ {IF, SWITCH, TERNARY}.
+    fun branch(kind: String, condition: String, constants: List<String> = emptyList()) {
+        bodyBranches.add(ConditionalBranchRef(kind, condition, constants))
+    }
+
+    fun expectsLambda(functionalType: String) {
+        bodyLambdas.add(functionalType)
+    }
+
+    fun nonDeterministic(source: String) {
+        bodyNonDet.add(source)
+    }
+
     fun toSignature(): MethodSignature = MethodSignature(
         name = name,
         returnType = returns,
@@ -253,5 +297,16 @@ class MethodScope(
         pendingCalls.forEach { fake.putCall(signature, it) }
         pendingAccesses.forEach { fake.putFieldAccess(signature, it) }
         pendingAssignments.forEach { fake.putFieldAssignment(signature, it) }
+        val analysis = MethodBodyAnalysis(
+            instantiations = bodyInstantiations.toList(),
+            expectedLambdas = bodyLambdas.toList(),
+            thrownExceptions = bodyThrown.toList(),
+            caughtExceptions = bodyCaught.toList(),
+            conditionalBranches = bodyBranches.toList(),
+            nonDeterministicSources = bodyNonDet.toList()
+        )
+        // N'enregistre que si au moins un élément a été déclaré — sinon le
+        // fake retombe sur MethodBodyAnalysis() par défaut (cohérent partout).
+        if (analysis != MethodBodyAnalysis()) fake.putBodyAnalysis(signature, analysis)
     }
 }
