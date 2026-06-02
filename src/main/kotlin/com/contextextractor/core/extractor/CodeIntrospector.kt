@@ -47,5 +47,19 @@ interface CodeIntrospector {
 
     fun readMethodBody(method: MethodSignature): String
 
+    // Analyse structurelle du corps — STRATEGIE.md §3.1 BLOC 2. Un seul
+    // parcours AST collecte instanciations, lambdas, exceptions lancées /
+    // catchées, branches conditionnelles et sources non-déterministes.
+    //
+    // **Frontière** : à n'appeler QUE sur des méthodes intra-SUT
+    // (SUT_BOOTSTRAP / INTERNAL_LOGIC). §3.3 « STOP » interdit la lecture du
+    // corps des méthodes externes — le respect de cette règle incombe à
+    // l'appelant (RecursiveDeepStrategy ne l'invoque jamais pour MOCK_EXTERNAL).
+    //
+    // Implémentation par défaut neutre : un introspector qui ne sait pas
+    // analyser le corps (cas dégradé §8bis, fake non configuré) retourne un
+    // résultat vide sans casser le pipeline aval.
+    fun analyzeMethodBody(method: MethodSignature): MethodBodyAnalysis = MethodBodyAnalysis()
+
     fun listAnnotations(target: AnnotatedTarget): List<AnnotationRef>
 }

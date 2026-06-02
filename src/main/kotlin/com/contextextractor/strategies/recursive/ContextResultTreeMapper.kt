@@ -3,12 +3,14 @@ package com.contextextractor.strategies.recursive
 import com.contextextractor.core.extractor.ClassField
 import com.contextextractor.core.extractor.MethodSignature
 import com.contextextractor.core.model.BasicContextNode
+import com.contextextractor.core.model.CaughtException
 import com.contextextractor.core.model.ContextNode
 import com.contextextractor.core.model.ContextResult
 import com.contextextractor.core.model.ContextTree
 import com.contextextractor.core.model.DataStructureInfo
 import com.contextextractor.core.model.FieldInitProtocol
 import com.contextextractor.core.model.InternalLogic
+import com.contextextractor.core.model.ThrownException
 import com.contextextractor.core.model.MetaKeys
 import com.contextextractor.core.model.MockInfo
 import com.contextextractor.core.model.NodeIds
@@ -102,8 +104,50 @@ class ContextResultTreeMapper {
         if (result.targetMethod.body.isNotEmpty()) {
             out[MetaKeys.METHOD_BODY] = result.targetMethod.body
         }
+        // §3.1 BLOC 2 — éléments structurels du corps. Chaque clé n'est posée
+        // que si la liste est non vide ⇒ le renderer ne produit aucune puce
+        // vide. Le corps en clair (ci-dessus) reste la source primaire ; ces
+        // listes structurées sont des indices ciblés pour le LLM.
+        val tm = result.targetMethod
+        if (sig.declaredThrows.isNotEmpty()) {
+            out[MetaKeys.METHOD_THROWS_DECLARED] = sig.declaredThrows.joinToString(", ")
+        }
+        if (tm.thrownExceptions.isNotEmpty()) {
+            out[MetaKeys.METHOD_THROWN_BODY] =
+                tm.thrownExceptions.joinToString(", ") { thrownLabel(it) }
+        }
+        if (tm.caughtExceptions.isNotEmpty()) {
+            out[MetaKeys.METHOD_CAUGHT] =
+                tm.caughtExceptions.joinToString(", ") { caughtLabel(it) }
+        }
+        if (tm.conditionalBranches.isNotEmpty()) {
+            out[MetaKeys.METHOD_BRANCHES] =
+                tm.conditionalBranches.joinToString("\n") { "${it.kind}: ${it.condition}" }
+        }
+        if (tm.nonDeterministicSources.isNotEmpty()) {
+            out[MetaKeys.METHOD_NON_DETERMINISTIC] = tm.nonDeterministicSources.joinToString(", ")
+        }
+        if (tm.expectedLambdas.isNotEmpty()) {
+            out[MetaKeys.METHOD_LAMBDAS] = tm.expectedLambdas.joinToString(", ")
+        }
+        // §3.6 — constructeur du SUT. Clé toujours posée (même chaîne vide) :
+        // le renderer rend `new SUT(<params>)` — paramètres vides ⇒ `new SUT()`.
+        val ctor = result.instantiationPlan.selectedConstructor
+        out[MetaKeys.SUT_CTOR_PARAMS] = ctor.parameters.joinToString(", ") {
+            "${it.type.fqName} ${it.name}"
+        }
+        if (ctor.superArgs.isNotEmpty()) {
+            out[MetaKeys.SUT_SUPER_ARGS] = ctor.superArgs.joinToString(", ")
+        }
         return out
     }
+
+    // Libellé d'une exception lancée — message inclus s'il est constant (§3.1).
+    private fun thrownLabel(t: ThrownException): String =
+        if (t.message != null) "${t.typeFqn} (\"${t.message}\")" else t.typeFqn
+
+    // Libellé d'un bloc catch — multi-catch joint par ' | '.
+    private fun caughtLabel(c: CaughtException): String = c.types.joinToString(" | ")
 
     // ── HIERARCHY ────────────────────────────────────────────────────────────
 
@@ -277,10 +321,27 @@ class ContextResultTreeMapper {
                     if (logic.callSummaries.isNotEmpty()) {
                         put("internalCallSummaries", logic.callSummaries.joinToString("\n"))
                     }
+                    if (logic.thrownExceptions.isNotEmpty()) {
+                        put(MetaKeys.INTERNAL_METHOD_THROWN,
+                            logic.thrownExceptions.joinToString(", ") { thrownLabel(it) })
+                    }
+                    if (logic.caughtExceptions.isNotEmpty()) {
+                        put(MetaKeys.INTERNAL_METHOD_CAUGHT,
+                            logic.caughtExceptions.joinToString(", ") { caughtLabel(it) })
+                    }
                     // Corps source — STRATEGIE.md §3.2. Frontière intra-SUT
                     // ouverte (cf §3.3 « STOP » qui ne s'applique qu'aux mocks).
                     if (logic.body.isNotEmpty()) {
                         put(MetaKeys.INTERNAL_METHOD_BODY, logic.body)
+                    }
+                    // Défaut #1 — §3.2bis. Marqueur STUB_VIA_SPY propagé pour
+                    // que le renderer bascule sur la section dédiée.
+                    if (logic.stubViaSpy) {
+                        put(MetaKeys.STUB_VIA_SPY, "true")
+                        if (logic.frameworkPrefixesHit.isNotEmpty()) {
+                            put(MetaKeys.STUB_VIA_SPY_PREFIXES,
+                                logic.frameworkPrefixesHit.joinToString(", "))
+                        }
                     }
                 }
             )

@@ -7,10 +7,14 @@ import com.contextextractor.core.extractor.ClassField
 import com.contextextractor.core.extractor.CodeIntrospector
 import com.contextextractor.core.extractor.FieldAccess
 import com.contextextractor.core.extractor.FieldAssignment
+import com.contextextractor.core.extractor.CaughtExceptionRef
+import com.contextextractor.core.extractor.ConditionalBranchRef
+import com.contextextractor.core.extractor.MethodBodyAnalysis
 import com.contextextractor.core.extractor.MethodCall
 import com.contextextractor.core.extractor.MethodSignature
 import com.contextextractor.core.extractor.Parameter
 import com.contextextractor.core.extractor.ResolvedType
+import com.contextextractor.core.extractor.ThrownExceptionRef
 import com.contextextractor.core.extractor.SourceFile
 import com.contextextractor.core.extractor.Symbol
 import com.contextextractor.core.extractor.SymbolKind
@@ -21,23 +25,33 @@ import com.intellij.psi.JavaRecursiveElementVisitor
 import com.intellij.psi.PsiAnnotation
 import com.intellij.psi.PsiAssignmentExpression
 import com.intellij.psi.PsiBinaryExpression
+import com.intellij.psi.PsiCatchSection
 import com.intellij.psi.PsiClass
 import com.intellij.psi.PsiClassObjectAccessExpression
 import com.intellij.psi.PsiConditionalExpression
+import com.intellij.psi.PsiDisjunctionType
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiEnumConstant
+import com.intellij.psi.PsiExpression
 import com.intellij.psi.PsiField
 import com.intellij.psi.PsiIfStatement
+import com.intellij.psi.PsiLambdaExpression
 import com.intellij.psi.PsiLiteralExpression
 import com.intellij.psi.PsiLoopStatement
 import com.intellij.psi.PsiManager
 import com.intellij.psi.PsiMethod
 import com.intellij.psi.PsiMethodCallExpression
+import com.intellij.psi.PsiMethodReferenceExpression
 import com.intellij.psi.PsiModifier
 import com.intellij.psi.PsiModifierList
+import com.intellij.psi.PsiNewExpression
 import com.intellij.psi.PsiReferenceExpression
 import com.intellij.psi.PsiSwitchBlock
+import com.intellij.psi.PsiSwitchExpression
+import com.intellij.psi.PsiSwitchStatement
 import com.intellij.psi.PsiThisExpression
+import com.intellij.psi.PsiThrowStatement
+import com.intellij.psi.PsiTryStatement
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.util.PsiTreeUtil
 
@@ -309,6 +323,139 @@ class JavaPsiIntrospector(
         return psiMethod.body?.text.orEmpty()
     }
 
+    // -- 8bis. analyzeMethodBody ----------------------------------------------
+
+    // STRATEGIE.md §3.1 BLOC 2 — un seul parcours AST collecte les éléments
+    // structurels du corps. À n'appeler que sur des méthodes intra-SUT (la
+    // frontière §3.3 « STOP » est garantie par RecursiveDeepStrategy).
+    override fun analyzeMethodBody(method: MethodSignature): MethodBodyAnalysis {
+        val psiMethod = methodCache[method] ?: return MethodBodyAnalysis()
+        val body = psiMethod.body ?: return MethodBodyAnalysis()
+
+        val instantiations = mutableListOf<ResolvedType>()
+        val lambdas = mutableListOf<String>()
+        val thrown = mutableListOf<ThrownExceptionRef>()
+        val caught = mutableListOf<CaughtExceptionRef>()
+        val branches = mutableListOf<ConditionalBranchRef>()
+        val nonDeterministic = mutableListOf<String>()
+
+        body.accept(object : JavaRecursiveElementVisitor() {
+
+            // `new Foo(...)` — sauf les exceptions instanciées directement dans
+            // un `throw` (capturées séparément ci-dessous, pas des DTO à bâtir).
+            override fun visitNewExpression(expression: PsiNewExpression) {
+                super.visitNewExpression(expression)
+                if (expression.parent is PsiThrowStatement) return
+                if (expression.classReference == null) return
+                expression.type?.let { instantiations.add(PsiTypeMapper.toResolved(it)) }
+            }
+
+            override fun visitLambdaExpression(expression: PsiLambdaExpression) {
+                super.visitLambdaExpression(expression)
+                expression.functionalInterfaceType?.let {
+                    lambdas.add(PsiTypeMapper.toResolved(it).fqName)
+                }
+            }
+
+            override fun visitMethodReferenceExpression(expression: PsiMethodReferenceExpression) {
+                super.visitMethodReferenceExpression(expression)
+                expression.functionalInterfaceType?.let {
+                    lambdas.add(PsiTypeMapper.toResolved(it).fqName)
+                }
+            }
+
+            override fun visitThrowStatement(statement: PsiThrowStatement) {
+                super.visitThrowStatement(statement)
+                val ex = statement.exception ?: return
+                val typeFqn = ex.type?.let { PsiTypeMapper.toResolved(it).fqName }
+                    ?: return
+                // Message capturé seulement si littéral constant (§3.1).
+                val message = (ex as? PsiNewExpression)
+                    ?.argumentList?.expressions?.firstOrNull()
+                    ?.let { it as? PsiLiteralExpression }
+                    ?.value as? String
+                thrown.add(ThrownExceptionRef(typeFqn, message))
+            }
+
+            override fun visitTryStatement(statement: PsiTryStatement) {
+                super.visitTryStatement(statement)
+                statement.catchSections.forEach { section ->
+                    caught.add(catchSectionRef(section))
+                }
+            }
+
+            override fun visitIfStatement(statement: PsiIfStatement) {
+                super.visitIfStatement(statement)
+                val condition = statement.condition ?: return
+                branches.add(branchRef("IF", condition))
+            }
+
+            override fun visitConditionalExpression(expression: PsiConditionalExpression) {
+                super.visitConditionalExpression(expression)
+                branches.add(branchRef("TERNARY", expression.condition))
+            }
+
+            override fun visitSwitchStatement(statement: PsiSwitchStatement) {
+                super.visitSwitchStatement(statement)
+                statement.expression?.let { branches.add(branchRef("SWITCH", it)) }
+            }
+
+            override fun visitSwitchExpression(expression: PsiSwitchExpression) {
+                super.visitSwitchExpression(expression)
+                expression.expression?.let { branches.add(branchRef("SWITCH", it)) }
+            }
+
+            override fun visitMethodCallExpression(expression: PsiMethodCallExpression) {
+                super.visitMethodCallExpression(expression)
+                val resolved = expression.resolveMethod() ?: return
+                val owner = resolved.containingClass?.qualifiedName ?: return
+                val key = "$owner.${resolved.name}"
+                if (key in NON_DETERMINISTIC_CALLS) nonDeterministic.add(key)
+            }
+        })
+
+        return MethodBodyAnalysis(
+            instantiations = instantiations,
+            expectedLambdas = lambdas.distinct(),
+            thrownExceptions = thrown,
+            caughtExceptions = caught,
+            conditionalBranches = branches,
+            nonDeterministicSources = nonDeterministic.distinct()
+        )
+    }
+
+    // Multi-catch supporté : `PsiDisjunctionType` énumère les types alternatifs.
+    private fun catchSectionRef(section: PsiCatchSection): CaughtExceptionRef {
+        val declared = section.parameter?.type
+        val types = when (declared) {
+            is PsiDisjunctionType -> declared.disjunctions.map { PsiTypeMapper.toResolved(it).fqName }
+            null -> emptyList()
+            else -> listOf(PsiTypeMapper.toResolved(declared).fqName)
+        }
+        val calls = mutableListOf<String>()
+        section.catchBlock?.accept(object : JavaRecursiveElementVisitor() {
+            override fun visitMethodCallExpression(expression: PsiMethodCallExpression) {
+                super.visitMethodCallExpression(expression)
+                val resolved = expression.resolveMethod() ?: return
+                val owner = resolved.containingClass?.qualifiedName ?: return
+                calls.add("$owner.${resolved.name}")
+            }
+        })
+        return CaughtExceptionRef(types, calls.distinct())
+    }
+
+    // Texte source de la condition + littéraux constants qui y apparaissent.
+    private fun branchRef(kind: String, condition: PsiExpression): ConditionalBranchRef {
+        val constants = mutableListOf<String>()
+        condition.accept(object : JavaRecursiveElementVisitor() {
+            override fun visitLiteralExpression(expression: PsiLiteralExpression) {
+                super.visitLiteralExpression(expression)
+                constants.add(expression.text)
+            }
+        })
+        return ConditionalBranchRef(kind, condition.text, constants.distinct())
+    }
+
     // -- 9. listAnnotations ---------------------------------------------------
 
     override fun listAnnotations(target: AnnotatedTarget): List<AnnotationRef> {
@@ -429,5 +576,23 @@ class JavaPsiIntrospector(
             modifiers.hasModifierProperty(PsiModifier.PRIVATE) -> "private"
             else -> "package-private"
         }
+    }
+
+    companion object {
+        // Sources non-déterministes — STRATEGIE.md §3.1 BLOC 2 « SourcesIndéter ».
+        // Clé = `${classFqn}.${methodName}`. Le LLM doit savoir les neutraliser
+        // (Clock injectable, mockStatic, valeur fixe) pour un test reproductible.
+        private val NON_DETERMINISTIC_CALLS = setOf(
+            "java.time.LocalDateTime.now",
+            "java.time.LocalDate.now",
+            "java.time.LocalTime.now",
+            "java.time.Instant.now",
+            "java.time.ZonedDateTime.now",
+            "java.time.OffsetDateTime.now",
+            "java.util.UUID.randomUUID",
+            "java.lang.Math.random",
+            "java.lang.System.currentTimeMillis",
+            "java.lang.System.nanoTime"
+        )
     }
 }

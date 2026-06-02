@@ -7,6 +7,7 @@ import com.contextextractor.core.extractor.ClassField
 import com.contextextractor.core.extractor.CodeIntrospector
 import com.contextextractor.core.extractor.FieldAccess
 import com.contextextractor.core.extractor.FieldAssignment
+import com.contextextractor.core.extractor.MethodBodyAnalysis
 import com.contextextractor.core.extractor.MethodCall
 import com.contextextractor.core.extractor.MethodSignature
 import com.contextextractor.core.extractor.SourceFile
@@ -29,6 +30,7 @@ class FakeIntrospector : CodeIntrospector {
     private val enclosingMethodBySymbol = mutableMapOf<String, MethodSignature>()
     private val superFqnChains = mutableMapOf<String, List<String>>()
     private val fieldsByOwner = mutableMapOf<String, MutableList<ClassField>>()
+    private val bodyAnalysisByMethod = mutableMapOf<MethodSignature, MethodBodyAnalysis>()
 
     // -- Implémentation du port -----------------------------------------------
 
@@ -60,6 +62,9 @@ class FakeIntrospector : CodeIntrospector {
 
     override fun readMethodBody(method: MethodSignature): String =
         bodies[method].orEmpty()
+
+    override fun analyzeMethodBody(method: MethodSignature): MethodBodyAnalysis =
+        bodyAnalysisByMethod[method] ?: MethodBodyAnalysis()
 
     override fun listAnnotations(target: AnnotatedTarget): List<AnnotationRef> =
         annotationsByTarget[target].orEmpty()
@@ -106,6 +111,10 @@ class FakeIntrospector : CodeIntrospector {
 
     internal fun putField(ownerFqn: String, field: ClassField) {
         fieldsByOwner.getOrPut(ownerFqn) { mutableListOf() }.add(field)
+    }
+
+    internal fun putBodyAnalysis(method: MethodSignature, analysis: MethodBodyAnalysis) {
+        bodyAnalysisByMethod[method] = analysis
     }
 
     // -- Helpers d'oracle pour les tests --------------------------------------

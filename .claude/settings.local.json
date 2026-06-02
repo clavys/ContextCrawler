@@ -38,7 +38,8 @@
       "Bash(grep -nE \"bucket 3.*all CALL_PUBLIC|CALL_PUBLIC_TRANSITIVE\\\\\\\\\\(\" 'C:/MesProjet/Kotlin/ContextCrawler/src/test/kotlin/com/contextextractor/strategy/initbloc/InitStrategyPriorityTest.kt')",
       "Bash(./gradlew compileTestKotlin --rerun-tasks --console=plain)",
       "Bash(./gradlew compileKotlin compileTestKotlin -q)",
-      "Bash(./gradlew integrationTest -q)"
+      "Bash(./gradlew integrationTest -q)",
+      "PowerShell(.\\\\gradlew test --console=plain 2>&1 | Select-Object -Last 60)"
     ]
   }
 }

@@ -403,6 +403,63 @@ Recurse(Classe, Methode, visites, resultat, INTERNAL_LOGIC, budget, profondeur)
       Recurse(arg, null, visites, resultat, DATA_STRUCTURE, ...)
 ```
 
+### 3.2bis Sous-cas `STUB_VIA_SPY` (frontière framework)
+
+**Motivation** — Un controleur JSF / Servlet expose des méthodes héritées d'une
+classe-cadre (`BaseControleur`, `HttpServlet`…) qui descendent directement dans
+`javax.faces.*`, `org.primefaces.*`, `javax.servlet.*` ou des appels I/O bas
+niveau. Expandre ces méthodes en `INTERNAL_LOGIC` produit deux échecs :
+
+1. La récursion collecte des mocks parasites sur le cadre (`FacesContext`,
+   `ExternalContext`, `RequestContext`, `NavigationHandler`…) qui saturent le
+   budget `maxMockCount` et n'apportent aucune valeur au test.
+2. Le LLM reçoit une consigne « ne pas mocker » sur des méthodes qu'il ne sait
+   pas exécuter sans initialiser tout l'écosystème JSF — ce qui crée un prompt
+   logiquement insatisfaisable et déclenche la boucle de raisonnement observée
+   en production (cf [incident SupervisionDeltaVecControleur]).
+
+**Détection** — Une méthode intra-SUT est classée `STUB_VIA_SPY` si :
+
+```text
+Pour chaque appel directement contenu dans Methode :
+  Si appel.classeApi.fqName matche un préfixe ∈ FRAMEWORK_PREFIXES :
+    Methode est STUB_VIA_SPY (drapeau stubViaSpy=true)
+    fin de l'analyse
+```
+
+`FRAMEWORK_PREFIXES` (V1, hard-codés, configurables YAML en V1.1) :
+- `javax.faces.`, `jakarta.faces.`
+- `org.primefaces.`
+- `javax.servlet.`, `jakarta.servlet.`
+- `java.io.`, `java.net.`, `java.nio.`
+
+On reste **conservateur** : pas `org.springframework.*` ni `org.hibernate.*`
+car leurs services sont à mocker normalement via `MOCK_EXTERNAL`. Seuls les
+cadres dont les classes ne sont **pas mockables raisonnablement** entrent
+dans la liste.
+
+**Sémantique** — Une méthode marquée `STUB_VIA_SPY` :
+
+- est enregistrée dans `resultat.logiquesInternes` avec `stubViaSpy = true` ET
+  `frameworkPrefixesHit = [préfixes matchés]`
+- **arrête la récursion** : son corps n'est pas exploré, ses appels ne sont
+  pas suivis, ses instanciations ne sont pas crawlées. Le test ne traversera
+  jamais ce code → inutile de le documenter au LLM.
+- est rendue dans une section dédiée (cf §6 `# Méthodes à stubber par spy`)
+  qui fournit le pattern Mockito `spy(sut) + doAnswer(...)`.
+
+**Interaction avec les autres modes** — Le check `STUB_VIA_SPY` se fait
+**après** la détection des getters triviaux (§3.2 + défaut #4) et **avant**
+la récursion `INTERNAL_LOGIC` normale. Une méthode hérité framework qui est
+aussi un getter trivial reste un getter trivial (court-circuit pur, sans spy
+nécessaire).
+
+**Marqueur pour le BFS d'usage transitif** (défaut #2) — Le calcul d'usage
+de champ traverse les méthodes `STUB_VIA_SPY` **comme les autres** pour
+collecter les champs qu'elles touchent (essentiel pour ne pas perdre les
+@Autowired hérités qui apparaissent uniquement dans la chaîne d'init). Le
+court-circuit n'agit que sur la collecte `internalLogics`.
+
 ### 3.3 Mode `MOCK_EXTERNAL`
 
 ```text
@@ -1144,7 +1201,7 @@ Méthodes à stubber :
   {si throws : "throws {liste}"}
 
 # Sous-méthodes internes (information seulement, ne pas mocker)
-{Pour chaque :}
+{Pour chaque InternalLogic dont stubViaSpy == false :}
 ## {classe}#{méthode}{signature}
 {si corps non vide :}
 Code source :
@@ -1153,6 +1210,19 @@ Code source :
 ```
 - lance : {exceptions}
 - appels-clés : {résumé}
+
+# Méthodes à stubber par spy (frontière framework — §3.2bis)
+{Pour chaque InternalLogic dont stubViaSpy == true :}
+## {classe}#{méthode}({argTypes})
+- Raison : appelle {préfixes matchés joints par ", "}
+- Pattern Mockito attendu dans @BeforeEach :
+  ```java
+  sut = spy(sut);
+  doAnswer(inv -> null).when(sut).{méthode}(any({argTypes[0]}.class));
+  // ou doReturn(<valeur>) si la méthode retourne autre chose que void
+  ```
+- Ne PAS explorer le corps de cette méthode — elle est traitée comme une
+  frontière de test (le test ne traverse jamais ce code).
 
 # Structures de données à construire
 {Pour chaque DTO :}

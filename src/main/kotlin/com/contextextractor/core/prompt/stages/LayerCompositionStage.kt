@@ -178,18 +178,57 @@ class LayerCompositionStage(
         )
 
         // Baseline provider-agnostic — PROMPT_FORMAT.md §"Section 1 — SYSTEM".
+        // Bug L : remontée des 4 règles les plus violées en haut du SYSTEM avec
+        // marqueurs [R1]..[R4]. Les règles répétées dans CONSTRAINTS deviennent
+        // une checklist de vérification (action verbs : « scan », « verify »).
         private val DEFAULT_SYSTEM = """
             You are an expert Java unit test writer.
+
             Output ONLY raw valid Java code. No explanation, no markdown, no code fences.
             Just the raw content of the .java file, starting with "package ...".
             Stack: Java 11, JUnit 5 (org.junit.jupiter.api), Mockito 4.x, AssertJ.
-            All comments inside the generated code must be written in French.
+
+            ═══ CRITICAL RULES — violated most often, read FIRST ═══
+            [R1] @Test required on EVERY test method (org.junit.jupiter.api.Test).
+                 Missing @Test → silent skip by JUnit → 0-coverage report.
+            [R2] NO comments inside the code — no `//`, no `/* */`, no Javadoc.
+                 Identifiers must be self-explanatory.
+            [R3] Test class and test methods MUST be package-private (no `public`
+                 keyword) — JUnit 5 does not require it.
+            [R4] NO `new TypeName(...)` for any type listed under `# Mocks` in
+                 CONTEXT. Declare `@Mock TypeName typeName;` instead.
+            ═══════════════════════════════════════════════════════
         """.trimIndent()
 
         // PROMPT_FORMAT.md §"Section 4 — CONSTRAINTS" — texte verbatim,
         // y compris le bloc `{IF tree.tronque == true}` géré par
         // expandTruncationBlock().
+        //
+        // Bug L : nouvel ordre par criticité —
+        //   1. Critical rules (verification checklist) — recopie [R1]..[R4]
+        //   2. Test class (structure attendue)
+        //   3. Style (strict)
+        //   4. Anti-hallucination contract
+        //   5. Imports verbatim
+        //   6. Required static imports
+        //   7. Hard prohibitions (INVALID/VALID)
+        //   8. Initialization / Coverage / Wrapping / Untestable / Truncation /
+        //      Compilation contract
         private val DEFAULT_CONSTRAINTS = """
+            # Critical rules — verification checklist (re-check BEFORE output)
+            Before returning the Java file, scan it line-by-line and verify:
+            - [R1] EVERY test method MUST be annotated `@Test` (org.junit.jupiter.api.Test).
+                   A method without `@Test` is invisible to JUnit and the test is silently
+                   skipped — this is the most common reason for a 0-coverage report.
+                   Scan: every `void xxx()` declaration must have `@Test` on the line above.
+            - [R2] NO comments anywhere in the file — no `//`, no `/* */`, no Javadoc on test methods.
+                   Search for `//`, `/*`, `*/` and remove EVERY match (including TODOs).
+            - [R3] Test class and test methods MUST be package-private (no `public` keyword).
+                   Search for `public` on the class line and on every test method — remove all.
+            - [R4] NO `new TypeName(...)` for any type listed under `# Mocks` in CONTEXT.
+                   Search every `new ` and verify the type is NOT in `# Mocks`.
+                   If it is, replace with `@Mock TypeName typeName;` (see Hard prohibitions).
+
             # Test class
             - Generate ONE single Java 11 test class
             - Class name: [TargetClassName]Test
@@ -198,6 +237,69 @@ class LayerCompositionStage(
             - Mocks via @Mock; SUT via @InjectMocks (unless explicit construction is required)
             - Assertions: AssertJ ONLY (assertThat...)
             - Stubbing: Mockito ONLY (when/thenReturn/thenThrow)
+
+            # Style (strict)
+            - NO comments anywhere in the file — no `//`, no `/* */`, no Javadoc on test methods
+            - Test class and test methods MUST be package-private (no `public` keyword)
+            - Field declarations may keep `private` for clarity but `public` is forbidden on tests
+            - Variable naming: a variable of type `TypeName` MUST be named `typeName`
+              (first letter lowercased, rest verbatim). Example: `PageDataDTO pageDataDTO;`,
+              `LigneResultatSupervisionDeltaVecDTO ligneResultatSupervisionDeltaVecDTO;`.
+              No abbreviations, no `dto`, no `obj`, no single-letter names.
+            - Method naming: camelCase only — NO underscore `_`, NO hyphen `-` in method names.
+              Example: `redirigerVersDetailsDeltaVecNominal()`, not `rediriger_vers_details_nominal()`.
+
+            # Anti-hallucination contract (strict)
+            - NEVER stub a method on the SUT (via `doReturn(...).when(sut).xxx()`) unless
+              `xxx` appears explicitly in the CONTEXT section. Methods listed under
+              "Méthodes à stubber par spy" are the ONLY SUT methods you may stub.
+            - NEVER invent helper methods on the SUT (no `sut.getXxx()` unless `getXxx`
+              is in CONTEXT). If a field value is needed, mock the field's type instead.
+
+            # Imports — strict FQN copy (anti-hallucination)
+            - For every type referenced in CONTEXT, copy its FQN VERBATIM into an import.
+              CONTEXT line `## fr.x.y.z.MyService` → `import fr.x.y.z.MyService;`
+            - NEVER shorten or substitute the package path by analogy with another type.
+              EXAMPLE: if CONTEXT lists `fr.gouv.justice.idt.service.local.pp.MyService`
+              and another type lives in `fr.gouv.justice.idt.dto.OtherDTO`, you MUST NOT
+              import `fr.gouv.justice.idt.dto.MyService` — that's a hallucination.
+            - When in doubt, locate the type's `##` header in CONTEXT and copy its
+              full path character-by-character.
+
+            # Required static imports (strict — non-compilable otherwise)
+            - For EVERY Mockito static method you use, add the matching `import static`.
+              Common pairs you MUST cover when used:
+                * `when(...)`        → `import static org.mockito.Mockito.when;`
+                * `verify(...)`      → `import static org.mockito.Mockito.verify;`
+                * `doReturn(...)`    → `import static org.mockito.Mockito.doReturn;`
+                * `doAnswer(...)`    → `import static org.mockito.Mockito.doAnswer;`
+                * `doThrow(...)`     → `import static org.mockito.Mockito.doThrow;`
+                * `doNothing()`      → `import static org.mockito.Mockito.doNothing;`
+                * `spy(...)`         → `import static org.mockito.Mockito.spy;`
+                * `mock(...)`        → `import static org.mockito.Mockito.mock;`
+                * `eq(...)`          → `import static org.mockito.ArgumentMatchers.eq;`
+                * `any(...)`         → `import static org.mockito.ArgumentMatchers.any;`
+                * `anyBoolean()`     → `import static org.mockito.ArgumentMatchers.anyBoolean;`
+                * `anyInt()`         → `import static org.mockito.ArgumentMatchers.anyInt;`
+                * `anyLong()`        → `import static org.mockito.ArgumentMatchers.anyLong;`
+                * `anyString()`      → `import static org.mockito.ArgumentMatchers.anyString;`
+            - For AssertJ: `import static org.assertj.core.api.Assertions.assertThat;`
+              (and `Assertions.fail` if needed for UNTESTABLE_AS_IS or TODO bodies).
+
+            # Hard prohibitions
+            - NO ReflectionTestUtils, NO setAccessible, NO Field manipulation
+            - NO @SpringBootTest, NO @WebMvcTest, NO @DataJpaTest, NO context loading
+            - NO instantiation of types listed under "Mocks" in CONTEXT — this is
+              the most violated rule. Verify each type used in `new TypeName(...)`
+              is NOT in `# Mocks`. If it is, declare it as `@Mock` instead.
+                * INVALID: `PageDataDTO pageDataDTO = new PageDataDTO();`
+                  when `# Mocks` lists `## fr.x.PageDataDTO` — even with a no-args
+                  ctor, you MUST declare `@Mock PageDataDTO pageDataDTO;` and let
+                  Mockito create it.
+                * VALID:   `@Mock PageDataDTO pageDataDTO;` then use the field
+                  directly in `when(...).thenReturn(pageDataDTO)`.
+            - NO invocation of method signatures NOT listed in CONTEXT
+            - NO real network/database/filesystem access
 
             # Initialization protocol
             - The init protocol described in CONTEXT is PRESCRIPTIVE
@@ -209,13 +311,6 @@ class LayerCompositionStage(
             - Cover each conditional branch listed in CONTEXT
             - Cover each exception listed in CONTEXT
 
-            # Hard prohibitions
-            - NO ReflectionTestUtils, NO setAccessible, NO Field manipulation
-            - NO @SpringBootTest, NO @WebMvcTest, NO @DataJpaTest, NO context loading
-            - NO instantiation of types listed under "Mocks" in CONTEXT
-            - NO invocation of method signatures NOT listed in CONTEXT
-            - NO real network/database/filesystem access
-
             # Wrapping rules for return types
             - Optional<T>          -> Optional.of(...) or Optional.empty()
             - CompletableFuture<T> -> CompletableFuture.completedFuture(...)
@@ -225,22 +320,23 @@ class LayerCompositionStage(
             - If a field appears with strategy UNTESTABLE_AS_IS:
               - Generate a test method named [methodName]_TODO_untestable
               - Body: fail("Test impossible à compléter sans refactor du SUT.");
-              - Add a Javadoc comment quoting the reason and refactoring hints from CONTEXT
+              - This single fail() call is the only allowed body — no comment, no Javadoc
 
             {IF tree.tronque == true}
             # Truncated context
             - WARNING: extracted context is partial.
               Reasons: {raisonsTroncature}
             - Generate the test using the available context only.
-            - Add a TODO comment listing what was truncated.
+            - Leave a single `fail("TODO truncated context");` in any test method whose
+              coverage depends on the truncated portion.
             {END IF}
 
             # Compilation contract
             - The generated file MUST compile with Java 11 without modification
             - If a dependency is non-mockable (static, final, private constructor):
-              add a comment: // ATTENTION: [reason] - manual mock required
+              skip the test method (do not generate it) — comments are forbidden
             - Goal: the test compiles and passes the nominal path
-              Edge cases beyond CONTEXT may be left as TODO comments
+              Edge cases beyond CONTEXT may be left as a single `fail("TODO");` body
         """.trimIndent()
 
         private val DEFAULT_INSTRUCTION = """

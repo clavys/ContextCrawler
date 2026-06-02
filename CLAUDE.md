@@ -25,7 +25,7 @@
 | Fichiers (noms, packages)                         | Anglais  |
 | Commentaires inline dans le code Kotlin           | Français |
 | Code Java généré (classes, méthodes)              | Anglais  |
-| Commentaires dans les tests générés               | Français |
+| Commentaires dans les tests générés               | Interdits (zéro commentaire) |
 | Specs (`.md`)                                     | Français |
 | Messages d'erreur visibles par l'utilisateur      | Français |
 | Logs techniques                                   | Anglais  |
@@ -173,7 +173,7 @@ ce format **strict** :
 - [ ] `targetMethod.signature.nom == "calculate"`
 - [ ] `champs` contient `{nom: "cache", type: "DiscountCache"}`
 - [ ] `protocoleInit["cache"].strategieRecommandee` est `CALL_POST_CONSTRUCT`
-- [ ] `protocoleInit["cache"].strategieRecommandee.methode.nom == "init"`
+- [ ] `protocoleInit["cache"].strategieRecommandl'étapeee.methode.nom == "init"`
 - [ ] `mocks` contient `DiscountRepository`
 - [ ] `mocks` ne contient PAS `DiscountCache` (auto-construit)
 
