@@ -25,7 +25,7 @@
 | Fichiers (noms, packages)                         | Anglais  |
 | Commentaires inline dans le code Kotlin           | Français |
 | Code Java généré (classes, méthodes)              | Anglais  |
-| Commentaires dans les tests générés               | Français |
+| Commentaires dans les tests générés               | Interdits (zéro commentaire) |
 | Specs (`.md`)                                     | Français |
 | Messages d'erreur visibles par l'utilisateur      | Français |
 | Logs techniques                                   | Anglais  |

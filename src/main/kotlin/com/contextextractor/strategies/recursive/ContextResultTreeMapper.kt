@@ -334,6 +334,15 @@ class ContextResultTreeMapper {
                     if (logic.body.isNotEmpty()) {
                         put(MetaKeys.INTERNAL_METHOD_BODY, logic.body)
                     }
+                    // Défaut #1 — §3.2bis. Marqueur STUB_VIA_SPY propagé pour
+                    // que le renderer bascule sur la section dédiée.
+                    if (logic.stubViaSpy) {
+                        put(MetaKeys.STUB_VIA_SPY, "true")
+                        if (logic.frameworkPrefixesHit.isNotEmpty()) {
+                            put(MetaKeys.STUB_VIA_SPY_PREFIXES,
+                                logic.frameworkPrefixesHit.joinToString(", "))
+                        }
+                    }
                 }
             )
         }

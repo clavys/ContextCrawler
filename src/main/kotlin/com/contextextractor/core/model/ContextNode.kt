@@ -86,6 +86,12 @@ object MetaKeys {
     const val METHOD_BODY = "methodBody"                  // root node — corps de methodeCible
     const val INTERNAL_METHOD_BODY = "internalMethodBody" // nœuds INTERNAL_METHOD
 
+    // Défaut #1 / §3.2bis — marqueurs STUB_VIA_SPY. Le renderer bascule sur
+    // la section « # Méthodes à stubber par spy » quand STUB_VIA_SPY == "true".
+    // STUB_VIA_SPY_PREFIXES liste les préfixes framework détectés, séparés par ', '.
+    const val STUB_VIA_SPY = "stubViaSpy"                 // "true"/"false"
+    const val STUB_VIA_SPY_PREFIXES = "stubViaSpyPrefixes"
+
     // Hiérarchie : niveaux séparés par ' → ' (du SUT à la super-classe la plus haute).
     const val HIERARCHY_LEVELS = "hierarchyLevels"
 

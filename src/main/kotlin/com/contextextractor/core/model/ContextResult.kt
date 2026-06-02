@@ -119,7 +119,14 @@ data class InternalLogic(
     // ligne 362 « Corps = AST(Methode) ». Frontière intra-SUT identique à la
     // target : on lit le corps pour le rendre au LLM. Vide pour les internes
     // synthétisés post-BLOC 7 dont le port n'aurait pas exposé le source.
-    val body: String = ""
+    val body: String = "",
+    // Défaut #1 — §3.2bis. Marqueur d'une méthode héritée framework qui descend
+    // dans javax.faces / javax.servlet / java.io etc. À stubber par
+    // `spy(sut) + doAnswer(...)` plutôt qu'à exécuter. Quand vrai, le renderer
+    // bascule sur la section « # Méthodes à stubber par spy » et le body /
+    // callSummaries ne sont pas rendus (frontière de test fermée).
+    val stubViaSpy: Boolean = false,
+    val frameworkPrefixesHit: List<String> = emptyList()
 )
 
 // MockInfo — STRATEGIE.md §3.3 / §5. `requiredSignatures` accumule les

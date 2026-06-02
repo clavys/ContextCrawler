@@ -37,7 +37,14 @@ class ContextRenderStage : PromptStage {
         renderInstantiationSection(sb, root)
         renderInitProtocol(sb, tree.ofKind(NodeKind.FIELD))
         renderMocks(sb, tree.ofKind(NodeKind.MOCK))
-        renderInternalMethods(sb, tree.ofKind(NodeKind.INTERNAL_METHOD))
+        // Défaut #1 — §3.2bis. On sépare les internes normales des frontières
+        // STUB_VIA_SPY et on rend chaque catégorie dans sa section dédiée.
+        val internals = tree.ofKind(NodeKind.INTERNAL_METHOD)
+        val (stubViaSpy, regularInternals) = internals.partition {
+            it.metadata[MetaKeys.STUB_VIA_SPY] == "true"
+        }
+        renderInternalMethods(sb, regularInternals)
+        renderStubViaSpyMethods(sb, stubViaSpy)
         renderDataStructures(sb, tree.ofKind(NodeKind.DATA_STRUCTURE))
         renderStaticCalls(sb, tree.ofKind(NodeKind.CUSTOM))
 
@@ -263,6 +270,57 @@ class ContextRenderStage : PromptStage {
                 sb.appendLine("- appels-clés :")
                 summaries.split('\n').forEach { sb.appendLine("  - $it") }
             }
+        }
+        sb.appendLine()
+    }
+
+    // ── # Méthodes à stubber par spy (frontière framework, §3.2bis) ─────────
+    //
+    // Une frontière framework descend dans `javax.faces.*`, `javax.servlet.*`
+    // ou un autre cadre non-mockable raisonnablement. Le LLM doit créer un spy
+    // du SUT et stub la méthode avec `doAnswer(null)` (ou `doReturn(...)` si
+    // la méthode retourne une valeur) — il ne doit JAMAIS laisser s'exécuter
+    // ce code, sinon il aura besoin d'initialiser tout l'écosystème framework
+    // (FacesContext, ExternalContext, NavigationHandler…).
+
+    private fun renderStubViaSpyMethods(sb: StringBuilder, methods: List<ContextNode>) {
+        if (methods.isEmpty()) return
+        sb.appendLine("# Méthodes à stubber par spy (frontière framework)")
+        for (m in methods) {
+            sb.appendLine("## ${m.title}")
+            val prefixes = m.metadata[MetaKeys.STUB_VIA_SPY_PREFIXES].orEmpty()
+            if (prefixes.isNotEmpty()) {
+                sb.appendLine("- Raison : descend dans $prefixes")
+            }
+            sb.appendLine("- Pattern attendu dans @BeforeEach :")
+            sb.appendLine("  ```java")
+            // Extrait le nom de méthode du title (format "$classFqn#$canonical").
+            // Le canonical contient déjà les types d'argument entre parenthèses.
+            val canonical = m.title.substringAfter('#')
+            val methodName = canonical.substringBefore('(')
+            val argTypes = canonical.substringAfter('(').substringBefore(')')
+            val anyExpr = if (argTypes.isEmpty()) "" else {
+                argTypes.split(',').joinToString(", ") { "any(${it.trim()}.class)" }
+            }
+            // Bug O — valeur de retour cohérente avec la signature stubée.
+            // L'ancien `doReturn(/* TODO */)` poussait le LLM à inventer un type
+            // (vu en production : `doReturn(pageDataDTO)` sur une méthode qui
+            // retourne String → WrongTypeOfReturnValue runtime).
+            // Règle : `doAnswer(invocation -> null)` est sûr pour void et tout
+            // type objet ; pour les primitives on émet une constante typée.
+            val returnType = m.metadata[MetaKeys.METHOD_RETURN_TYPE].orEmpty()
+            val doExpr = when (returnType) {
+                "boolean", "java.lang.Boolean" -> "doReturn(false)"
+                "byte", "short", "int", "long", "float", "double",
+                "java.lang.Byte", "java.lang.Short", "java.lang.Integer",
+                "java.lang.Long", "java.lang.Float", "java.lang.Double" -> "doReturn(0)"
+                "char", "java.lang.Character" -> "doReturn('\\u0000')"
+                else -> "doAnswer(invocation -> null)"
+            }
+            sb.appendLine("  sut = spy(sut);")
+            sb.appendLine("  $doExpr.when(sut).$methodName($anyExpr);")
+            sb.appendLine("  ```")
+            sb.appendLine("- Ne PAS explorer le corps — frontière de test fermée.")
         }
         sb.appendLine()
     }

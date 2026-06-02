@@ -106,8 +106,16 @@ class RecursiveDeepStrategy : ContextStrategy {
         )
 
         // ── BLOC 3 : INVENTAIRE DES CHAMPS UTILES ─────────────────────────────
-        val activeFields = introspector.listFieldAccesses(targetMethod)
+        val directFieldAccesses = introspector.listFieldAccesses(targetMethod)
             .map { it.fieldName }.toSet()
+        // Bug P — un appel à un getter trivial intra-SUT (ex : héritage
+        // `BaseControleur#getUserSession()`) doit compter comme un accès au
+        // champ retourné. Sinon le champ hérité non-@Autowired serait dropé
+        // de `usefulFields`, et son type ne serait pas mocké correctement.
+        val trivialGetterFieldNames = resolveTrivialGetterFieldNames(
+            introspector, hierarchyFqns, targetCalls
+        )
+        val activeFields = directFieldAccesses + trivialGetterFieldNames
         val usefulFields = collectUsefulFields(introspector, hierarchy, activeFields)
 
         // ── BLOC 4 : PROTOCOLE DE CONSTRUCTION DU SUT ─────────────────────────
@@ -124,7 +132,29 @@ class RecursiveDeepStrategy : ContextStrategy {
             classifier = classifier,
             budget = config.budget,
             sutHierarchyFqns = hierarchyFqns,
-            targetMethod = targetMethod
+            targetMethod = targetMethod,
+            frameworkPrefixes = config.frameworkPackagePrefixes
+        )
+        // Bug I — types essentiels pré-amorcés depuis la signature de target.
+        // Les paramètres doivent être instanciables ou mockables par le test
+        // (le LLM les passe à `sut.method(...)`) — ils ne doivent JAMAIS être
+        // dropés du budget des mocks.
+        ctx.essentialMockTypes += targetMethod.parameters.map { it.type.fqName }
+        ctx.essentialMockTypes += targetMethod.parameters.flatMap { it.type.typeArgs.map { ta -> ta.fqName } }
+        // Bug M — chaque type sur lequel le corps de target appelle une méthode
+        // d'instance est essentiel. Cas concret : `supervisionDeltaVecService.
+        // preparerContexteDetailDeltaVec(...)` → SupervisionDeltaVecService est
+        // essentiel et survit une éviction par 10 @Autowired moins importants.
+        // Filtre `!in hierarchyFqns` : un appel `this.xxx()` ne compte pas (le
+        // SUT n'a pas besoin d'être mocké, c'est l'objet sous test).
+        ctx.essentialMockTypes += targetAnalysis.instanceCalls
+            .map { it.targetType }
+            .filterNot { it in hierarchyFqns }
+        // Bug P — pour les chaînes `this.getXxx().doSomething()`, getXxx est
+        // intra-SUT (donc filtré par Bug M) mais le type retourné par le
+        // getter — le type du champ derrière — doit aussi être essentiel.
+        ctx.essentialMockTypes += resolveTrivialGetterFieldTypes(
+            introspector, hierarchyFqns, targetCalls
         )
         // Marquer la racine SUT_BOOTSTRAP visitée — évite une re-entrée si BLOC 6
         // déclenche un appel au SUT lui-même (cas pathologique mais possible).
@@ -134,10 +164,52 @@ class RecursiveDeepStrategy : ContextStrategy {
             targetAnalysis, depth = 0)
 
         // ── BLOC 7 : PROTOCOLE D'INITIALISATION DES CHAMPS (§4) ───────────────
-        val block7 = runBlock7(
+        val rawBlock7 = runBlock7(
             introspector, config.budget, hierarchyFqns,
             usefulFields, selectedConstructor, targetMethod
         )
+        // Bug P — un champ surfacé via getter trivial intra-SUT (cas
+        // `BaseControleur#getUserSession()` retournant `userSession` sans
+        // @Autowired) doit recevoir la stratégie MOCKITO_INJECT_MOCKS. C'est
+        // ce que le LLM va utiliser : `@Mock SessionModel ...; @InjectMocks
+        // SUT ...;`. Sans cette substitution, la réconciliation drop le mock
+        // de type SessionModel car le champ a une stratégie SETTER/UNTESTABLE.
+        val block7 = if (trivialGetterFieldNames.isEmpty()) rawBlock7
+        else rawBlock7.copy(
+            initProtocol = rawBlock7.initProtocol.mapValues { (name, proto) ->
+                if (name in trivialGetterFieldNames &&
+                    proto.recommendedStrategy !is InitStrategy.MOCKITO_INJECT_MOCKS) {
+                    proto.copy(recommendedStrategy = InitStrategy.MOCKITO_INJECT_MOCKS)
+                } else proto
+            }
+        )
+
+        // ── Filtrage par usage transitif (défaut #2) ──────────────────────────
+        // Avant la réconciliation, on calcule l'ensemble des champs effectivement
+        // touchés par la méthode cible OU par les chemins d'init élus en BLOC 7.
+        // Un @Autowired non utilisé (typique sur les controleurs Spring avec
+        // 10+ injections) sera dropé : la stratégie aurait sinon listé un mock
+        // parasite qui consomme inutilement le budget `maxMockCount`.
+        //
+        // Règle de conservation :
+        //   • dans l'usage transitif → garder
+        //   • OU stratégie d'init non-MOCKITO (CONSTRUCTOR/SETTER/CALL_*/UNTESTABLE)
+        //     → garder (intentionnellement documentée pour le LLM)
+        //   • sinon (MOCKITO_INJECT_MOCKS + jamais touché) → drop
+        val transitiveUsage = computeTransitiveFieldUsage(
+            introspector, hierarchyFqns, targetMethod,
+            block7.initProtocol, config.budget.maxGraphDepth,
+            frameworkPrefixes = config.frameworkPackagePrefixes
+        )
+        val filteredFields = usefulFields.filter { f ->
+            val strategy = block7.initProtocol[f.name]?.recommendedStrategy
+            f.name in transitiveUsage || strategy !is InitStrategy.MOCKITO_INJECT_MOCKS
+        }
+        val droppedFieldNames = (usefulFields - filteredFields).map { it.name }.toSet()
+        val droppedFieldTypes = (usefulFields - filteredFields).map { it.type.fqName }.toSet()
+        val filteredInitProtocol = block7.initProtocol.filterKeys { it !in droppedFieldNames }
+        val filteredInitOrder = block7.initOrder.filter { it !in droppedFieldNames }
+        val filteredDiagnostic = buildTestabilityDiagnostic(filteredInitProtocol)
 
         // ── Réconciliation post-BLOC 7 — verrou critique étape 7 ──────────────
         // Si BLOC 7 a décidé qu'un champ s'auto-construit (CALL_PUBLIC_WITH_ARGS,
@@ -146,9 +218,16 @@ class RecursiveDeepStrategy : ContextStrategy {
         // serait contradictoire (« mocke Config » + « sut.configure() construit
         // config » dans le même prompt). BLOC 7 a la priorité sémantique :
         // c'est l'avis le plus tardif (et le plus informé).
+        //
+        // Étape #2 additionnelle : drop également les mocks orphelins — types
+        // correspondant à un champ dropé sans aucun champ conservé du même type.
         val rawMocks = ctx.mocks.mapValues { it.value.build() }
+        val mocksAfterFieldFilter = rawMocks.filterKeys { typeFqn ->
+            if (typeFqn !in droppedFieldTypes) true
+            else filteredFields.any { it.type.fqName == typeFqn }
+        }
         val reconciledMocks = reconcileMocksWithInitProtocol(
-            rawMocks, block7.initProtocol, usefulFields
+            mocksAfterFieldFilter, filteredInitProtocol, filteredFields
         )
 
         // ── Enrichissement internalLogics — étape 7 #3 ─────────────────────────
@@ -161,14 +240,30 @@ class RecursiveDeepStrategy : ContextStrategy {
         val enrichedInternalLogics = enrichInternalLogicsWithDownstream(
             introspector = introspector,
             hierarchyFqns = hierarchyFqns,
-            initProtocol = block7.initProtocol,
-            existing = ctx.internalLogics.toMap()
+            initProtocol = filteredInitProtocol,
+            existing = ctx.internalLogics.toMap(),
+            frameworkPrefixes = config.frameworkPackagePrefixes
         )
+
+        // ── Bug B — Filtrage des dataStructures par usage transitif ───────────
+        // Le crawl BLOC 6 a accumulé des DTOs depuis tous les champs et
+        // paramètres, y compris ceux dont le @Autowired a été dropé par
+        // défaut #2. On les filtre ici pour ne garder que ceux atteints
+        // depuis la méthode cible / les mocks / les internes.
+        val reachableDtos = computeReachableDataStructures(
+            introspector = introspector,
+            targetMethod = targetMethod,
+            targetAnalysis = targetAnalysis,
+            internalLogics = enrichedInternalLogics,
+            mocks = reconciledMocks,
+            rawDataStructures = ctx.dataStructures.toMap()
+        )
+        val filteredDataStructures = ctx.dataStructures.filterKeys { it in reachableDtos }
 
         return ContextResult(
             sutFqName = sut.fqn,
             hierarchy = hierarchy,
-            fields = usefulFields,
+            fields = filteredFields,
             instantiationPlan = InstantiationPlan(
                 selectedConstructor = selectedConstructor,
                 setters = setters,
@@ -177,11 +272,11 @@ class RecursiveDeepStrategy : ContextStrategy {
             targetMethod = targetAnalysis,
             internalLogics = enrichedInternalLogics,
             mocks = reconciledMocks,
-            dataStructures = ctx.dataStructures.toMap(),
+            dataStructures = filteredDataStructures,
             staticCalls = ctx.staticCalls.toList(),
-            initProtocol = block7.initProtocol,
-            initOrder = block7.initOrder,
-            testabilityDiagnostic = block7.diagnostic,
+            initProtocol = filteredInitProtocol,
+            initOrder = filteredInitOrder,
+            testabilityDiagnostic = filteredDiagnostic,
             intraSutCallGraph = block7.callGraphSerialized,
             truncated = ctx.truncationReasons.isNotEmpty(),
             truncationReasons = ctx.truncationReasons.toList()
@@ -237,7 +332,8 @@ class RecursiveDeepStrategy : ContextStrategy {
         introspector: CodeIntrospector,
         hierarchyFqns: Set<String>,
         initProtocol: Map<String, FieldInitProtocol>,
-        existing: Map<String, InternalLogic>
+        existing: Map<String, InternalLogic>,
+        frameworkPrefixes: List<String> = emptyList()
     ): Map<String, InternalLogic> {
         val downstreamCanonicals = initProtocol.values
             .map { it.recommendedStrategy }
@@ -259,6 +355,20 @@ class RecursiveDeepStrategy : ContextStrategy {
             val (ownerFqn, sig) = match
             val key = "$ownerFqn#${sig.canonical()}"
             if (key in out) continue
+            // Défaut #4 — un getter trivial intra-SUT découvert via downstreamChain
+            // ne mérite pas d'entrée INTERNAL_LOGIC. Cohérence avec BLOC 6c.
+            if (isTrivialGetter(introspector, sig)) continue
+            // Défaut #1 — frontière framework rencontrée via downstreamChain →
+            // enregistrer en STUB_VIA_SPY sans capturer body/callSummaries.
+            val hits = detectFrameworkBoundary(introspector, sig, frameworkPrefixes, hierarchyFqns)
+            if (hits.isNotEmpty()) {
+                out[key] = InternalLogic(
+                    signature = sig,
+                    stubViaSpy = true,
+                    frameworkPrefixesHit = hits
+                )
+                continue
+            }
             // Synthèse minimale : résumé d'appels (= une ligne par appel non-static).
             // Le format `targetType.methodName` est cohérent avec le rendu §6 actuel.
             val callSummaries = introspector.listMethodCalls(sig)
@@ -608,11 +718,29 @@ class RecursiveDeepStrategy : ContextStrategy {
         depth: Int
     ) {
         // 6a — dépendances de construction (constructeur ∪ champs utiles)
+        // Bug D — priorisation par usage transitif depuis target. Les champs
+        // touchés directement ou via une chaîne intra-SUT non-framework sont
+        // visités en PREMIER : leurs mocks rentrent dans le budget avant que
+        // les @Autowired parasites (non touchés) ne le saturent. Sur un
+        // controleur Spring avec 10 @Autowired et budget=10, sans cette
+        // priorisation, les mocks essentiels arrivés tard (champs hérités du
+        // parent, types retour de méthodes mockées) sont dropés en FIFO.
+        val reachableFromTarget = computeFieldsReachableFromTarget(
+            ctx.introspector, ctx.sutHierarchyFqns, targetMethod,
+            ctx.frameworkPrefixes, ctx.budget.maxGraphDepth
+        )
         ctor.parameters.forEach { p ->
             recurseDispatch(ctx, p.type.fqName, CallerContext.FIELD_OF_SUT,
                 methodToCall = null, depth = depth + 1)
         }
-        usefulFields.forEach { f ->
+        val (highPriority, lowPriority) = usefulFields.partition { f ->
+            f.name in reachableFromTarget
+        }
+        highPriority.forEach { f ->
+            recurseDispatch(ctx, f.type.fqName, CallerContext.FIELD_OF_SUT,
+                methodToCall = null, depth = depth + 1)
+        }
+        lowPriority.forEach { f ->
             recurseDispatch(ctx, f.type.fqName, CallerContext.FIELD_OF_SUT,
                 methodToCall = null, depth = depth + 1)
         }
@@ -624,12 +752,28 @@ class RecursiveDeepStrategy : ContextStrategy {
         }
 
         // 6c — appels d'instance (split intra-SUT vs externe)
+        // Défaut #4 — Court-circuit des getters triviaux intra-SUT.
+        // Défaut #1 — Court-circuit des méthodes héritées framework : si la
+        // méthode appelle directement une classe javax.faces / org.primefaces /
+        // java.io etc., on la marque STUB_VIA_SPY et on n'explore pas son
+        // corps (évite de polluer les mocks avec FacesContext, etc.).
         targetAnalysis.instanceCalls.forEach { call ->
             val calledMethod = findMethodIn(ctx, call.targetType, call.methodName, call.argTypes)
             if (call.targetType in ctx.sutHierarchyFqns) {
-                if (calledMethod != null) {
-                    recurseInternalLogic(ctx, call.targetType, calledMethod, depth + 1)
+                if (calledMethod == null) return@forEach
+                if (isTrivialGetter(ctx.introspector, calledMethod)) return@forEach
+                // Bug N — détection transitive : si la chaîne intra-SUT descend
+                // dans un préfixe framework, on stub l'ENTRÉE (calledMethod) et
+                // on n'explore pas la cascade en internalLogics.
+                val hits = detectFrameworkBoundary(
+                    ctx.introspector, calledMethod, ctx.frameworkPrefixes,
+                    ctx.sutHierarchyFqns
+                )
+                if (hits.isNotEmpty()) {
+                    addStubViaSpyEntry(ctx, call.targetType, calledMethod, hits)
+                    return@forEach
                 }
+                recurseInternalLogic(ctx, call.targetType, calledMethod, depth + 1)
             } else {
                 recurseDispatch(ctx, call.targetType, CallerContext.CALL_TARGET,
                     methodToCall = calledMethod, depth = depth + 1)
@@ -752,6 +896,8 @@ class RecursiveDeepStrategy : ContextStrategy {
         )
 
         // Récursion : ré-appliquer BLOC 6c sur les appels de ce corps.
+        // Défaut #4 — getter trivial intra-SUT ignoré (idem BLOC 6c).
+        // Défaut #1 — méthode framework boundary → STUB_VIA_SPY, pas de récursion.
         calls.forEach { call ->
             val calledMethod = findMethodIn(ctx, call.targetType, call.methodName, call.argTypes)
             if (call.isStatic) {
@@ -761,7 +907,17 @@ class RecursiveDeepStrategy : ContextStrategy {
                 return@forEach
             }
             if (call.targetType in ctx.sutHierarchyFqns) {
-                if (calledMethod != null) recurseInternalLogic(ctx, call.targetType, calledMethod, depth + 1)
+                if (calledMethod == null) return@forEach
+                if (isTrivialGetter(ctx.introspector, calledMethod)) return@forEach
+                val hits = detectFrameworkBoundary(
+                    ctx.introspector, calledMethod, ctx.frameworkPrefixes,
+                    ctx.sutHierarchyFqns
+                )
+                if (hits.isNotEmpty()) {
+                    addStubViaSpyEntry(ctx, call.targetType, calledMethod, hits)
+                    return@forEach
+                }
+                recurseInternalLogic(ctx, call.targetType, calledMethod, depth + 1)
             } else {
                 recurseDispatch(ctx, call.targetType, CallerContext.CALL_TARGET, calledMethod, depth + 1)
             }
@@ -788,9 +944,51 @@ class RecursiveDeepStrategy : ContextStrategy {
     ) {
         val key = VisitKey(ExtractionMode.MOCK_EXTERNAL, classFqn, methodToCall?.canonical())
         if (!ctx.visits.isNew(key)) return
+        // Politique d'éviction quand maxMockCount saturé — 3 niveaux :
+        //
+        // 1. (Défaut #3 / Bug A) Évincer un framework/infrastructure de score
+        //    strictement inférieur. Domaine vs domaine interdit (anti yo-yo).
+        // 2. (Bug I) Si le nouveau venu est essentiel (paramètre de target ou
+        //    returnType d'une signature déjà stubée), évincer un non-essentiel
+        //    quelconque. Sinon le test ne pourrait pas construire la valeur.
+        // 3. Sinon drop FIFO du nouveau venu.
         if (ctx.mocks.size >= ctx.budget.maxMockCount && classFqn !in ctx.mocks) {
-            ctx.truncationReasons += "maxMockCount atteint — drop mock $classFqn"
-            return
+            val newWeight = classifyMockCategoryWeight(classFqn, ctx.frameworkPrefixes)
+            val newScore = 1 + newWeight
+            val isNewEssential = classFqn in ctx.essentialMockTypes
+
+            val weakestFramework = ctx.mocks.entries
+                .filter { it.value.categoryWeight < 0 }
+                .minByOrNull { it.value.score() }
+            when {
+                weakestFramework != null && weakestFramework.value.score() < newScore -> {
+                    ctx.truncationReasons +=
+                        "maxMockCount éviction LFU — drop ${weakestFramework.key} " +
+                            "(framework/infra, score=${weakestFramework.value.score()}) " +
+                            "au profit de $classFqn (score=$newScore)"
+                    ctx.mocks.remove(weakestFramework.key)
+                }
+                isNewEssential -> {
+                    val weakestNonEssential = ctx.mocks.entries
+                        .filter { it.key !in ctx.essentialMockTypes }
+                        .minByOrNull { it.value.score() }
+                    if (weakestNonEssential != null) {
+                        ctx.truncationReasons +=
+                            "maxMockCount éviction essentielle — drop ${weakestNonEssential.key} " +
+                                "(non-essentiel) au profit de $classFqn (essentiel : paramètre " +
+                                "target ou returnType de mock)"
+                        ctx.mocks.remove(weakestNonEssential.key)
+                    } else {
+                        ctx.truncationReasons +=
+                            "maxMockCount atteint — drop mock essentiel $classFqn (tous essentiels)"
+                        return
+                    }
+                }
+                else -> {
+                    ctx.truncationReasons += "maxMockCount atteint — drop mock $classFqn"
+                    return
+                }
+            }
         }
 
         // Phase 1 : type pour le mock = type déclaré (à 4c on prend la classe
@@ -800,13 +998,20 @@ class RecursiveDeepStrategy : ContextStrategy {
             MockBuilder(
                 concreteClass = classFqn,
                 declaredType = classFqn,
-                classAnnotations = descriptor?.annotations.orEmpty()
+                classAnnotations = descriptor?.annotations.orEmpty(),
+                categoryWeight = classifyMockCategoryWeight(classFqn, ctx.frameworkPrefixes)
             )
         }
 
         // Phase 2 : signature appelée
         if (methodToCall != null && builder.signatures.none { it.canonical() == methodToCall.canonical() }) {
             builder.signatures += methodToCall
+            // Bug I — le returnType de cette signature devient essentiel :
+            // le LLM devra construire la valeur que `when(mock.method()).thenReturn(...)`
+            // attend. Si ce type est un mock dropé du budget, le test ne compile pas
+            // (cas observé sur PageDataDTO sans ctor sans args).
+            ctx.essentialMockTypes += methodToCall.returnType.fqName
+            ctx.essentialMockTypes += methodToCall.returnType.typeArgs.map { it.fqName }
         }
 
         // Phase 3 : récursion sur le type de retour pour stubbing
@@ -1133,6 +1338,511 @@ class RecursiveDeepStrategy : ContextStrategy {
     }
 
     // ──────────────────────────────────────────────────────────────────────────
+    // Défaut #1 — détection des frontières framework (§3.2bis STUB_VIA_SPY)
+    // ──────────────────────────────────────────────────────────────────────────
+    //
+    // Une méthode intra-SUT est une frontière framework si elle appelle
+    // directement (sans creuser) au moins une méthode d'une classe externe
+    // dont le FQN matche un préfixe configuré dans `StrategyConfig.frameworkPackagePrefixes`.
+    // Le test ne traversera jamais ce code — il sera stubbé via spy + doAnswer.
+    //
+    // **Pourquoi un seul saut** : creuser plus profond ouvrirait le risque de
+    // tagger toute méthode intra-SUT dès qu'une dépendance lointaine touche
+    // javax.io. La sémantique « frontière directe » est plus prévisible et
+    // suffit pour les controleurs JSF / Servlet (cas usuel).
+    private fun detectFrameworkBoundary(
+        introspector: CodeIntrospector,
+        method: MethodSignature,
+        frameworkPrefixes: List<String>,
+        hierarchyFqns: Set<String> = emptySet(),
+        maxDepth: Int = 8
+    ): List<String> {
+        if (frameworkPrefixes.isEmpty()) return emptyList()
+        // Bug N — détection transitive. Le but : reporter les hits framework
+        // sur l'ENTRÉE de la chaîne (la méthode appelée directement par target
+        // ou par une méthode interne) et non sur la méthode la plus profonde.
+        //
+        // Cas concret : `target → redirige(PageDataDTO) → redirige(2) →
+        // redirige(3) → redirige(4) → javax.faces`. Si on stub redirige(4), le
+        // SUT exécute toute la cascade jusqu'à 4-arg ; le test n'isole rien.
+        // Si on stub redirige(1) (l'entrée), la cascade est court-circuitée
+        // à la racine — le pattern qu'attend la référence Mockito 4.x.
+        //
+        // BFS bornée par maxDepth pour éviter les cycles transitifs et limiter
+        // le coût sur les hiérarchies profondes. Mode rétro-compatible : si
+        // `hierarchyFqns` vide, on ne fait que la détection directe (depth 0).
+        val visited = mutableSetOf<String>()
+        val queue = ArrayDeque<Pair<MethodSignature, Int>>()
+        queue.add(method to 0)
+        val hits = LinkedHashSet<String>()
+        while (queue.isNotEmpty()) {
+            val (m, d) = queue.removeFirst()
+            if (!visited.add(m.canonical())) continue
+            if (d > maxDepth) continue
+            val calls = introspector.listMethodCalls(m)
+            // 1. Hits directs (depth 0 = retour-compatible avec l'ancien comportement)
+            calls.forEach { c ->
+                frameworkPrefixes.firstOrNull { p -> c.targetType.startsWith(p) }
+                    ?.let { hits += it }
+            }
+            // 2. Descente transitive intra-SUT (uniquement si hierarchyFqns fourni)
+            if (hierarchyFqns.isNotEmpty()) {
+                calls.forEach { c ->
+                    if (c.targetType !in hierarchyFqns) return@forEach
+                    val cls = introspector.resolveClass(c.targetType) ?: return@forEach
+                    val candidates = introspector.listMethods(cls).filter { it.name == c.methodName }
+                    val next = candidates.firstOrNull { sig ->
+                        sig.parameters.map { it.type.fqName } == c.argTypes
+                    } ?: candidates.firstOrNull() ?: return@forEach
+                    queue.add(next to d + 1)
+                }
+            }
+        }
+        return hits.toList()
+    }
+
+    // Défaut #3 — pondération de catégorie pour l'éviction LFU des mocks.
+    //
+    // Trois niveaux :
+    //   -2 : préfixe framework hard (matche `frameworkPackagePrefixes`). Ces
+    //        classes sont par définition non testables raisonnablement et
+    //        n'apparaissent plus en pratique après le défaut #1, mais le filet
+    //        reste utile si un MOCK_EXTERNAL slip through (ex : `java.util.Map`
+    //        utilisé comme argument explicite — pas tout à fait framework hard
+    //        mais analogue).
+    //   -1 : infrastructure de service (logger, contexte Spring) qui pourrait
+    //        être créée par BLOC 6 mais qui n'a quasi jamais d'intérêt pour
+    //        le test de la logique métier.
+    //    0 : domaine utilisateur (par défaut). Ne perd pas la priorité.
+    private fun classifyMockCategoryWeight(
+        classFqn: String,
+        frameworkPrefixes: List<String>
+    ): Int {
+        if (frameworkPrefixes.any { classFqn.startsWith(it) }) return -2
+        if (INFRASTRUCTURE_MOCK_PREFIXES.any { classFqn.startsWith(it) }) return -1
+        return 0
+    }
+
+    // Enregistre une méthode intra-SUT comme frontière de test. Pas de body
+    // capturé (frontière fermée), pas de callSummaries — seul le marqueur
+    // stubViaSpy + les préfixes hits informent le renderer.
+    //
+    // Respecte les budgets : maxInternalLogicCount et VisitRegistry pour éviter
+    // les doublons (la même méthode peut être atteinte via plusieurs chemins).
+    private fun addStubViaSpyEntry(
+        ctx: RecursionContext,
+        classFqn: String,
+        method: MethodSignature,
+        frameworkHits: List<String>
+    ) {
+        val key = VisitKey(ExtractionMode.INTERNAL_LOGIC, classFqn, method.canonical())
+        if (!ctx.visits.isNew(key)) return
+        if (ctx.internalLogics.size >= ctx.budget.maxInternalLogicCount) {
+            ctx.truncationReasons +=
+                "maxInternalLogicCount atteint — drop STUB_VIA_SPY $classFqn#${method.name}"
+            return
+        }
+        val logicKey = "$classFqn#${method.canonical()}"
+        ctx.internalLogics[logicKey] = InternalLogic(
+            signature = method,
+            stubViaSpy = true,
+            frameworkPrefixesHit = frameworkHits
+        )
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Défaut #4 — détection des getters triviaux
+    // ──────────────────────────────────────────────────────────────────────────
+    //
+    // Un getter trivial = méthode dont le corps se résume à `return this.X;`
+    // ou `return X;`. La traiter comme une sous-méthode INTERNAL_LOGIC pousse
+    // le LLM à laisser exécuter le code, ce qui exige que X soit initialisé
+    // sans qu'aucun protocole d'init ne le mentionne (cas typique
+    // `BaseAstreaControleur#getUserSession()` qui retourne le champ hérité
+    // `userSession`).
+    //
+    // Heuristique : pas d'appel, pas de branche, pas d'exception, pas
+    // d'instanciation, pas d'assignation, exactement 1 accès en lecture. Si le
+    // type de retour correspond au type du champ accédé, c'est un getter
+    // trivial. Le BFS d'usage transitif (défaut #2) descend quand même dans
+    // ces méthodes pour attraper le champ retourné — donc le filtrage ici
+    // n'écarte que la mention dans `internalLogics`, pas la collecte du champ.
+    private fun isTrivialGetter(
+        introspector: CodeIntrospector,
+        method: MethodSignature
+    ): Boolean {
+        if (method.name == "<init>") return false
+        if (method.parameters.isNotEmpty()) return false
+        if (introspector.listMethodCalls(method).isNotEmpty()) return false
+        val analysis = introspector.analyzeMethodBody(method)
+        if (analysis.thrownExceptions.isNotEmpty()) return false
+        if (analysis.caughtExceptions.isNotEmpty()) return false
+        if (analysis.conditionalBranches.isNotEmpty()) return false
+        if (analysis.instantiations.isNotEmpty()) return false
+        if (analysis.expectedLambdas.isNotEmpty()) return false
+        if (introspector.listFieldAssignments(method).isNotEmpty()) return false
+        val accesses = introspector.listFieldAccesses(method)
+        if (accesses.size != 1) return false
+        val access = accesses.single()
+        if (access.write) return false
+        // Garde-fou body : `return "k-" + this.id;` a un seul accès en lecture
+        // sur `id` MAIS contient une expression binaire (concaténation). Sans
+        // ce check, on classerait à tort ce code comme getter trivial.
+        //
+        // Pattern accepté : `return X;` ou `return this.X;` (avec ou sans accolades).
+        // Si le body n'est pas exposé (FakeIntrospector non configuré → body
+        // vide), on s'en remet aux autres critères (pas de wrapping possible
+        // sans appel/binary expr → le compilateur n'aurait nulle part où le
+        // produire). Le fait que aucune méthode/instanciation/branche n'ait été
+        // observée est déjà une signature comportementale forte.
+        val body = introspector.readMethodBody(method).trim()
+            .removeSurrounding("{", "}").trim()
+        if (body.isNotEmpty()) {
+            val name = access.fieldName
+            val accepted = setOf(
+                "return $name;",
+                "return this.$name;"
+            )
+            if (body !in accepted) return false
+        }
+        return true
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Bug P — résolution des getters triviaux intra-SUT
+    // ──────────────────────────────────────────────────────────────────────────
+    //
+    // Quand le corps de la méthode cible appelle `this.getX().y()`, et que
+    // `getX()` est un getter trivial qui renvoie le champ `x`, le LLM doit :
+    //   • mocker le type retourné (pour stubber `.y()`)
+    //   • et savoir que `x` est un champ utile du SUT (pour que `@InjectMocks`
+    //     ou le protocole d'init le câble).
+    //
+    // `resolveTrivialGetterFieldNames` enrichit `activeFields` avec le nom du
+    // champ retourné par le getter — utilisé en amont de `collectUsefulFields`.
+    //
+    // `resolveTrivialGetterFieldTypes` enrichit `essentialMockTypes` avec le
+    // type FQN du champ retourné. Cas concret : `BaseControleur#getUserSession`
+    // renvoie `userSession: SessionAstreaModele` ; sans cette propagation,
+    // SessionAstreaModele pourrait être évincé sur un budget tendu.
+    private fun resolveTrivialGetterFieldNames(
+        introspector: CodeIntrospector,
+        hierarchyFqns: Set<String>,
+        calls: List<MethodCall>
+    ): Set<String> {
+        val out = mutableSetOf<String>()
+        forEachTrivialGetterField(introspector, hierarchyFqns, calls) { fieldName, _ ->
+            out += fieldName
+        }
+        return out
+    }
+
+    private fun resolveTrivialGetterFieldTypes(
+        introspector: CodeIntrospector,
+        hierarchyFqns: Set<String>,
+        calls: List<MethodCall>
+    ): Set<String> {
+        val out = mutableSetOf<String>()
+        forEachTrivialGetterField(introspector, hierarchyFqns, calls) { _, field ->
+            out += field.type.fqName
+            out += field.type.typeArgs.map { it.fqName }
+        }
+        return out
+    }
+
+    // Visiteur partagé : pour chaque appel d'instance intra-SUT qui résout vers
+    // un getter trivial, invoque `accept(nomDuChamp, ClassField)`. Le champ est
+    // résolu dans la hiérarchie complète du SUT (le getter peut être déclaré sur
+    // un parent et accéder à un champ d'un autre niveau).
+    private fun forEachTrivialGetterField(
+        introspector: CodeIntrospector,
+        hierarchyFqns: Set<String>,
+        calls: List<MethodCall>,
+        accept: (String, ClassField) -> Unit
+    ) {
+        // Index pré-calculé des champs de la hiérarchie SUT pour éviter une
+        // résolution O(n*m) à chaque appel quand la hiérarchie est profonde.
+        val fieldsByName: Map<String, ClassField> = hierarchyFqns
+            .asSequence()
+            .mapNotNull { introspector.resolveClass(it) }
+            .flatMap { introspector.listFields(it).asSequence() }
+            .associateBy { it.name }
+        calls.forEach { call ->
+            if (call.isStatic) return@forEach
+            if (call.targetType !in hierarchyFqns) return@forEach
+            val cls = introspector.resolveClass(call.targetType) ?: return@forEach
+            val candidates = introspector.listMethods(cls).filter { it.name == call.methodName }
+            val method = candidates.firstOrNull { sig ->
+                sig.parameters.map { it.type.fqName } == call.argTypes
+            } ?: candidates.firstOrNull() ?: return@forEach
+            if (!isTrivialGetter(introspector, method)) return@forEach
+            val access = introspector.listFieldAccesses(method).singleOrNull() ?: return@forEach
+            val field = fieldsByName[access.fieldName] ?: return@forEach
+            accept(access.fieldName, field)
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Défaut #2 — usage transitif des champs
+    // ──────────────────────────────────────────────────────────────────────────
+    //
+    // BFS limité par `maxGraphDepth` qui parcourt les méthodes intra-SUT
+    // atteignables depuis la méthode cible OU depuis les entry points élus par
+    // BLOC 7. À chaque méthode visitée, accumule les noms de champs accédés
+    // (`listFieldAccesses` + `listFieldAssignments`).
+    //
+    // **Pourquoi inclure les entry points BLOC 7** : sur §9.3 (case93), la
+    // méthode cible `calculate` ne touche que `cache`, mais `cache` s'init via
+    // `start() → buildCache()` qui touche `loader`. Sans cette seed, `loader`
+    // serait dropé alors qu'il est essentiel à l'init.
+    //
+    // **Frontière intra-SUT** : `listFieldAccesses`/`listFieldAssignments` ne
+    // sont appelés que sur des méthodes appartenant à la hiérarchie du SUT
+    // (cf contrat §3.3 « STOP » sur les méthodes externes). Le BFS ne suit
+    // qu'un appel dont `targetType in hierarchyFqns`.
+    // ──────────────────────────────────────────────────────────────────────────
+    // Bug B — Filtrage transitif des DataStructures
+    // ──────────────────────────────────────────────────────────────────────────
+    //
+    // Pendant BLOC 6, la stratégie crawle des DTOs depuis tous les champs du
+    // SUT, paramètres, types retour et instanciations — y compris ceux des
+    // champs @Autowired qui seront finalement dropés par le défaut #2. Ces
+    // DTOs orphelins polluent la section « # Structures de données à construire »
+    // du prompt (cas observé : `SupervisionDeltaVecModele` sur le controleur
+    // JSF, jamais touché par la méthode cible).
+    //
+    // Critère de conservation — un DTO est gardé s'il est *atteignable* depuis :
+    //   • un paramètre de la méthode cible (+ ses type-args)
+    //   • le type retour de la méthode cible (+ ses type-args)
+    //   • une instanciation observée dans le corps de la méthode cible
+    //   • une instanciation observée dans une méthode interne (intra-SUT visitée)
+    //   • le type retour d'une signature stubée sur un mock conservé (le LLM
+    //     devra construire ce retour avec `when().thenReturn(new DTO(...))`)
+    //   • un champ d'un DTO conservé (transitivité — un DTO conservé qui
+    //     contient un autre DTO le rend nécessaire pour la construction)
+    private fun computeReachableDataStructures(
+        introspector: CodeIntrospector,
+        targetMethod: MethodSignature,
+        targetAnalysis: TargetMethodAnalysis,
+        internalLogics: Map<String, InternalLogic>,
+        mocks: Map<String, MockInfo>,
+        rawDataStructures: Map<String, DataStructureInfo>
+    ): Set<String> {
+        if (rawDataStructures.isEmpty()) return emptySet()
+
+        // Seeds — types FQN à conserver de manière inconditionnelle.
+        val seeds = mutableSetOf<String>()
+        // Paramètres + type-args
+        targetMethod.parameters.forEach { p ->
+            seeds += p.type.fqName
+            seeds += p.type.typeArgs.map { it.fqName }
+        }
+        // Type retour + type-args
+        seeds += targetMethod.returnType.fqName
+        seeds += targetMethod.returnType.typeArgs.map { it.fqName }
+        // Instanciations du body cible
+        seeds += targetAnalysis.instantiations.map { it.fqName }
+        // Instanciations des méthodes internes intra-SUT visitées (frontière
+        // STUB_VIA_SPY exclue car son corps n'a pas été lu → pas d'instantiations).
+        internalLogics.values
+            .filter { !it.stubViaSpy }
+            .forEach { logic ->
+                seeds += introspector.analyzeMethodBody(logic.signature)
+                    .instantiations.map { it.fqName }
+            }
+        // Retours des méthodes stubées sur les mocks conservés
+        mocks.values.forEach { mock ->
+            mock.requiredSignatures.forEach { sig ->
+                seeds += sig.returnType.fqName
+                seeds += sig.returnType.typeArgs.map { it.fqName }
+            }
+        }
+
+        // BFS sur les références sortantes d'un DTO conservé. Suit :
+        //   • fields (tous patterns sauf SEALED/ENUM/RECORD purs)
+        //   • sealedSubs (le LLM doit construire une des sous-classes scellées)
+        //   • builderInfo.methods (paramètres exposés par le builder)
+        //   • factoryMethods (paramètres + retour des fabriques statiques)
+        val kept = mutableSetOf<String>()
+        val visited = mutableSetOf<String>()
+        val queue = ArrayDeque<String>().apply { addAll(seeds) }
+        while (queue.isNotEmpty()) {
+            val fqn = queue.removeFirst()
+            if (!visited.add(fqn)) continue
+            val dto = rawDataStructures[fqn] ?: continue
+            kept += fqn
+            dto.fields.forEach { f ->
+                queue.add(f.type.fqName)
+                queue.addAll(f.type.typeArgs.map { it.fqName })
+            }
+            queue.addAll(dto.sealedSubs)
+            dto.builderInfo?.methods?.forEach { m ->
+                queue.add(m.type.fqName)
+                queue.addAll(m.type.typeArgs.map { it.fqName })
+            }
+            dto.factoryMethods.forEach { fm ->
+                queue.add(fm.returnType.fqName)
+                queue.addAll(fm.returnType.typeArgs.map { it.fqName })
+                fm.parameters.forEach { p ->
+                    queue.add(p.type.fqName)
+                    queue.addAll(p.type.typeArgs.map { it.fqName })
+                }
+            }
+        }
+        return kept
+    }
+
+    // Bug D — calcul d'un set de champs *reachable depuis target* utilisé pour
+    // PRIORISER l'ordre de visite en BLOC 6a. Le BFS s'arrête à toute méthode
+    // framework boundary (respect anticipé de STUB_VIA_SPY). Sans init protocol
+    // (calculé en BLOC 7) : ce set sert uniquement à donner la priorité, pas à
+    // filtrer définitivement. Les champs hors set sont quand même visités (ils
+    // peuvent être nécessaires pour l'init découverte plus tard) mais en queue
+    // — ils consommeront les places restantes du budget `maxMockCount`.
+    private fun computeFieldsReachableFromTarget(
+        introspector: CodeIntrospector,
+        hierarchyFqns: Set<String>,
+        targetMethod: MethodSignature,
+        frameworkPrefixes: List<String>,
+        maxGraphDepth: Int
+    ): Set<String> {
+        val methodIndex: List<Pair<String, MethodSignature>> = hierarchyFqns.flatMap { fqn ->
+            val cls = introspector.resolveClass(fqn) ?: return@flatMap emptyList()
+            introspector.listMethods(cls).map { fqn to it }
+        }
+        val accessed = mutableSetOf<String>()
+        val visited = mutableSetOf<String>()
+        val queue = ArrayDeque<Pair<MethodSignature, Int>>()
+        queue.add(targetMethod to 0)
+
+        while (queue.isNotEmpty()) {
+            val (method, depth) = queue.removeFirst()
+            if (!visited.add(method.canonical())) continue
+            if (depth > maxGraphDepth) continue
+            // Respect anticipé de STUB_VIA_SPY (Bug N : détection transitive).
+            // Bug E + Bug N — détection DIRECTE (depth 0) intentionnelle.
+            // On ne passe PAS hierarchyFqns : sinon le BFS skip le target lui-
+            // même dès qu'un descendant intra-SUT descend dans le framework
+            // (cas redirige → javax.faces), et on perd les accès champ propres
+            // du target. La sémantique transitive est réservée aux call sites
+            // 6c/6c-bis qui décident du STUB_VIA_SPY entry.
+            if (frameworkPrefixes.isNotEmpty() &&
+                detectFrameworkBoundary(introspector, method, frameworkPrefixes).isNotEmpty()
+            ) continue
+
+            introspector.listFieldAccesses(method).forEach { accessed += it.fieldName }
+            introspector.listFieldAssignments(method).forEach { accessed += it.fieldName }
+
+            introspector.listMethodCalls(method).forEach { call ->
+                if (call.targetType in hierarchyFqns) {
+                    val next = methodIndex.firstOrNull { (owner, sig) ->
+                        owner == call.targetType && sig.name == call.methodName &&
+                            sig.parameters.map { it.type.fqName } == call.argTypes
+                    } ?: methodIndex.firstOrNull { (owner, sig) ->
+                        owner == call.targetType && sig.name == call.methodName
+                    }
+                    if (next != null) queue.add(next.second to depth + 1)
+                }
+            }
+        }
+        return accessed
+    }
+
+    private fun computeTransitiveFieldUsage(
+        introspector: CodeIntrospector,
+        hierarchyFqns: Set<String>,
+        targetMethod: MethodSignature,
+        initProtocol: Map<String, FieldInitProtocol>,
+        maxGraphDepth: Int,
+        frameworkPrefixes: List<String> = emptyList()
+    ): Set<String> {
+        // Index hiérarchie : liste de (classFqn, MethodSignature). Sert au
+        // lookup des appels intra-SUT et à résoudre les canonicals de
+        // `CALL_PUBLIC_TRANSITIVE.downstreamChain`. Construit une seule fois.
+        val methodIndex: List<Pair<String, MethodSignature>> = hierarchyFqns.flatMap { fqn ->
+            val cls = introspector.resolveClass(fqn) ?: return@flatMap emptyList()
+            introspector.listMethods(cls).map { fqn to it }
+        }
+
+        val accessed = mutableSetOf<String>()
+        val visited = mutableSetOf<String>() // dédup par canonical
+        val queue = ArrayDeque<Pair<MethodSignature, Int>>()
+
+        // Seeds — méthode cible + entry points dans le protocole d'init.
+        queue.add(targetMethod to 0)
+        initProtocol.values.forEach { protocol ->
+            collectInitEntryPoints(protocol.recommendedStrategy, methodIndex)
+                .forEach { queue.add(it to 0) }
+        }
+
+        while (queue.isNotEmpty()) {
+            val (method, depth) = queue.removeFirst()
+            val canonical = method.canonical()
+            if (!visited.add(canonical)) continue
+            if (depth > maxGraphDepth) continue
+            // Bug E — respect de la frontière framework. Une méthode qui descend
+            // dans javax.faces/* etc. est par construction STUB_VIA_SPY : son
+            // corps ne s'exécutera pas dans le test, donc ses accès field
+            // observables n'ont pas à entrer dans le « champ utilisé ». Sans ce
+            // garde-fou, le BFS récupère filArianeModele/messageErreurModele via
+            // les surcharges de redirige, qui restent ensuite dans `mocks`
+            // comme parasites.
+            // Bug E + Bug N — détection DIRECTE (depth 0) intentionnelle.
+            // On ne passe PAS hierarchyFqns : sinon le BFS skip le target lui-
+            // même dès qu'un descendant intra-SUT descend dans le framework
+            // (cas redirige → javax.faces), et on perd les accès champ propres
+            // du target. La sémantique transitive est réservée aux call sites
+            // 6c/6c-bis qui décident du STUB_VIA_SPY entry.
+            if (frameworkPrefixes.isNotEmpty() &&
+                detectFrameworkBoundary(introspector, method, frameworkPrefixes).isNotEmpty()
+            ) continue
+
+            introspector.listFieldAccesses(method).forEach { accessed += it.fieldName }
+            introspector.listFieldAssignments(method).forEach { accessed += it.fieldName }
+
+            introspector.listMethodCalls(method).forEach { call ->
+                if (call.targetType in hierarchyFqns) {
+                    val next = methodIndex.firstOrNull { (owner, sig) ->
+                        owner == call.targetType && sig.name == call.methodName &&
+                            sig.parameters.map { it.type.fqName } == call.argTypes
+                    } ?: methodIndex.firstOrNull { (owner, sig) ->
+                        owner == call.targetType && sig.name == call.methodName
+                    }
+                    if (next != null) queue.add(next.second to depth + 1)
+                }
+            }
+        }
+        return accessed
+    }
+
+    // Extrait les MethodSignature qui doivent servir de seed au BFS d'usage
+    // selon le type de stratégie d'init. Les stratégies passives (CONSTRUCTOR,
+    // IMPLICIT, MOCKITO_INJECT_MOCKS, UNTESTABLE_AS_IS) ne portent pas de
+    // méthode d'init et retournent une liste vide.
+    private fun collectInitEntryPoints(
+        strategy: InitStrategy,
+        methodIndex: List<Pair<String, MethodSignature>>
+    ): List<MethodSignature> = when (strategy) {
+        is InitStrategy.CALL_POST_CONSTRUCT -> listOf(strategy.method)
+        is InitStrategy.CALL_PUBLIC -> listOf(strategy.method)
+        is InitStrategy.CALL_PUBLIC_WITH_STUBS -> listOf(strategy.method)
+        is InitStrategy.CALL_PUBLIC_WITH_ARGS -> listOf(strategy.method)
+        is InitStrategy.CALL_PUBLIC_TRANSITIVE -> {
+            val downstream = strategy.downstreamChain.mapNotNull { canonical ->
+                methodIndex.firstOrNull { (_, sig) -> sig.canonical() == canonical }?.second
+            }
+            listOf(strategy.entryPoint) + downstream
+        }
+        is InitStrategy.CALL_SAME_PACKAGE -> listOf(strategy.method)
+        is InitStrategy.SETTER,
+        InitStrategy.CONSTRUCTOR,
+        InitStrategy.IMPLICIT,
+        InitStrategy.IMPLICIT_VIA_CONSTRUCTOR,
+        InitStrategy.MOCKITO_INJECT_MOCKS,
+        is InitStrategy.UNTESTABLE_AS_IS -> emptyList()
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
     // Helpers
     // ──────────────────────────────────────────────────────────────────────────
 
@@ -1184,12 +1894,22 @@ class RecursiveDeepStrategy : ContextStrategy {
         val budget: Budget,
         val sutHierarchyFqns: Set<String>,
         @Suppress("unused") val targetMethod: MethodSignature,
+        // Défaut #1 — préfixes framework propagés depuis StrategyConfig pour
+        // détecter les frontières STUB_VIA_SPY pendant la récursion.
+        val frameworkPrefixes: List<String> = emptyList(),
         val visits: VisitRegistry = VisitRegistry(),
         val mocks: LinkedHashMap<String, MockBuilder> = LinkedHashMap(),
         val internalLogics: LinkedHashMap<String, InternalLogic> = LinkedHashMap(),
         val dataStructures: LinkedHashMap<String, DataStructureInfo> = LinkedHashMap(),
         val staticCalls: MutableList<StaticCallInfo> = mutableListOf(),
-        val truncationReasons: MutableList<String> = mutableListOf()
+        val truncationReasons: MutableList<String> = mutableListOf(),
+        // Bug I — types FQN considérés *essentiels* pour le test. Les mocks
+        // de ces types ne sont jamais dropés par le budget : éviction d'un
+        // non-essentiel si la place manque. Initialisé avec les paramètres
+        // de target (le test doit les construire ou les mocker), enrichi au
+        // fur et à mesure avec les returnType des signatures stubées (le LLM
+        // doit savoir construire la valeur retournée par le mock).
+        val essentialMockTypes: MutableSet<String> = mutableSetOf()
     )
 
     private class MockBuilder(
@@ -1197,8 +1917,17 @@ class RecursiveDeepStrategy : ContextStrategy {
         var declaredType: String,
         var classAnnotations: List<String>,
         val signatures: MutableList<MethodSignature> = mutableListOf(),
-        var returnIsNestedMock: Boolean = false
+        var returnIsNestedMock: Boolean = false,
+        // Défaut #3 — pondération de catégorie pour l'éviction LFU.
+        // Valeurs typiques : -2 (préfixe framework hard, ex javax.faces.),
+        // -1 (infrastructure ex org.slf4j.), 0 (domaine utilisateur).
+        val categoryWeight: Int = 0
     ) {
+        // Score d'usage pour l'éviction LFU : signatures stubées + bonus
+        // négatif pour les classes framework. Un mock à 0 signature et préfixe
+        // framework hard a score=-2 → premier candidat à l'éviction.
+        fun score(): Int = signatures.size + categoryWeight
+
         fun build(): MockInfo = MockInfo(
             concreteClass = concreteClass,
             declaredType = declaredType,
@@ -1211,6 +1940,19 @@ class RecursiveDeepStrategy : ContextStrategy {
     companion object {
         private val SYSTEM_STATIC_PREFIXES = listOf(
             "java.", "javax.", "jakarta.", "kotlin.", "scala.", "sun.", "com.sun."
+        )
+
+        // Défaut #3 — préfixes infrastructure pour l'éviction LFU des mocks.
+        // Distincts des frameworkPackagePrefixes (défaut #1) qui ciblent les
+        // classes non-mockables raisonnablement. Ici on liste les classes
+        // mockables mais à faible valeur métier — premières évincées si le
+        // budget de mocks est saturé.
+        private val INFRASTRUCTURE_MOCK_PREFIXES = listOf(
+            "org.slf4j.",
+            "org.apache.logging.",
+            "org.springframework.context.",
+            "org.springframework.beans.",
+            "org.springframework.web.context."
         )
 
         // Patterns sans Phase 3 — leurs « champs » sont les composants/constantes/
