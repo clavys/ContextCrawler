@@ -105,10 +105,10 @@ class NoCommentsNoPublicConstraintTest {
         val out = renderedPrompt()
         assertTrue(out.contains("Anti-hallucination contract"),
             "section anti-hallucination explicite")
-        assertTrue(out.contains("NEVER stub a method on the SUT"),
-            "verrou anti-hallucination sur les méthodes du SUT")
-        assertTrue(out.contains("Méthodes à stubber par spy"),
-            "renvoi explicite à la section spy autorisée")
+        assertTrue(out.contains("NEVER stub a method on the class under test"),
+            "verrou anti-hallucination sur les méthodes du SUT — Bug R désambigue 'SUT'")
+        assertTrue(out.contains("Methods to stub via spy"),
+            "renvoi explicite à la section spy autorisée — Bug Q anglais")
     }
 
     @Test

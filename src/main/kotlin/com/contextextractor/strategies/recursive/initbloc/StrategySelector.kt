@@ -158,14 +158,32 @@ class StrategySelector(
     // cible précède la première lecture. V1 ne fait pas d'analyse transitive
     // (« ou via appel transitif » §4.5 line 796) ; on regarde uniquement les
     // accès directs dans methodeCible. Suffisant pour les cas 91-95.
+    //
+    // Bug CC — élargissement : un champ ÉCRIT par target (mais jamais lu) est
+    // aussi un cas d'auto-init. Le test n'a aucune action à faire avant d'appeler
+    // target — c'est le target lui-même qui assigne la valeur. Sans cet
+    // élargissement, le champ tombait en branche 11 → UNTESTABLE_AS_IS, ce qui
+    // marquait toute la classe non testable et générait un test `_TODO_untestable`.
+    // Avec cet élargissement, le rendu CONTEXT omet le step (IMPLICIT_KINDS).
+    //
+    // Vérification combinée à `listFieldAssignments` car certains champs ne sont
+    // qu'assignés (pas accédés par .read) et n'apparaîtraient pas dans
+    // listFieldAccesses selon l'introspecteur.
     private fun isAutoInitialized(field: ClassField): Boolean {
         val accesses = introspector.listFieldAccesses(targetMethod)
             .filter { it.fieldName == field.name }
         val firstWrite = accesses.indexOfFirst { it.write }
         val firstRead = accesses.indexOfFirst { !it.write }
-        if (firstWrite < 0) return false
-        if (firstRead < 0) return false
-        return firstWrite < firstRead
+        // Cas 1 — write-then-read dans target : auto-init §4.5 original.
+        if (firstWrite >= 0 && firstRead >= 0 && firstWrite < firstRead) return true
+        // Bug CC — Cas 2 — write-only dans target (champ output, jamais relu).
+        // Détection via listFieldAssignments car listFieldAccesses peut ne pas
+        // tagger systématiquement les écritures selon le port.
+        val assignments = introspector.listFieldAssignments(targetMethod)
+            .filter { it.fieldName == field.name }
+        if (assignments.isNotEmpty()) return true
+        if (firstWrite >= 0 && firstRead < 0) return true
+        return false
     }
 
     // §4.6 construireRaison — 3 templates conditionnels.

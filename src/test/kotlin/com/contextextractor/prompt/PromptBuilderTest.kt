@@ -77,12 +77,14 @@ class PromptBuilderTest {
         val output = buildFor(Fixtures.case91(),
             "com.testproject.case91.OrderService", "calculate")
 
-        // §6 : ## Champ pour cache + stratégie + appel sut.init() avec
+        // §6 : ## Field pour cache + stratégie + appel orderService.init() avec
         // commentaire @PostConstruct (ContextRenderStage).
-        assertTrue(output.contains("## Champ `cache`"),
+        assertTrue(output.contains("## Field `cache`"),
             "section champ cache absente du rendu")
-        assertTrue(output.contains("Stratégie : CALL_POST_CONSTRUCT"))
-        assertTrue(output.contains("sut.init();"), "appel sut.init() attendu")
+        assertTrue(output.contains("Strategy: CALL_POST_CONSTRUCT"))
+        // Bug R — variable dérivée du SUT (OrderService → orderService).
+        assertTrue(output.contains("orderService.init();"),
+            "appel orderService.init() attendu")
     }
 
     @Test
@@ -99,19 +101,20 @@ class PromptBuilderTest {
     // ── case92 : verrou explicite sur l'instanciation du SUT ─────────────────
 
     @Test
-    fun `case92 instantiation line shows new OrderService() — assumed V1 limit`() {
-        // Verrou explicite demandé : ContextRenderStage rend l'instanciation
-        // avec un ctor no-args. La fixture case92 ne déclare PAS de
-        // constructeur explicite sur OrderService — donc `new OrderService()`
-        // est CORRECT (pas un gap). Si une fixture future ajoute un ctor
-        // avec dépendances, ce test cassera et forcera la mise à jour de
-        // ContextRenderStage pour lire `instantiationPlan.selectedConstructor`.
+    fun `case92 instantiation section uses @InjectMocks for SUT with autowired fields`() {
+        // Bug V — case92 OrderService a un champ @Autowired (pricingGateway).
+        // L'instanciation doit utiliser @InjectMocks (Mockito injecte
+        // automatiquement), pas `new OrderService()` + setters inventés.
+        // Le pattern STUB_VIA_SPY (s'il existe) wrap ensuite cette instance.
         val output = buildFor(Fixtures.case92(),
             "com.testproject.case92.OrderService", "calculate")
-        assertTrue(output.contains("# Instanciation du SUT"),
+        assertTrue(output.contains("# Class under test instantiation"),
             "section instanciation absente du rendu")
-        assertTrue(output.contains("new com.testproject.case92.OrderService()"),
-            "instanciation no-args attendue (case92 SUT n'a pas de ctor avec deps)")
+        assertTrue(output.contains("@InjectMocks"),
+            "Bug V : @InjectMocks attendu pour SUT avec champs @Autowired")
+        assertTrue(output.contains("private com.testproject.case92.OrderService orderService;"),
+            "Bug V : champ @InjectMocks doit utiliser le FQN de la classe et la " +
+                "variable typeName (orderService). Output:\n$output")
     }
 
     @Test
@@ -119,12 +122,12 @@ class PromptBuilderTest {
         val output = buildFor(Fixtures.case92(),
             "com.testproject.case92.OrderService", "calculate")
         // BLOC 7 : configure(int, java.lang.String) → CALL_PUBLIC_WITH_ARGS.
-        assertTrue(output.contains("## Champ `config`"),
+        assertTrue(output.contains("## Field `config`"),
             "section champ config absente du rendu case92")
-        assertTrue(output.contains("Stratégie : CALL_PUBLIC_WITH_ARGS"),
+        assertTrue(output.contains("Strategy: CALL_PUBLIC_WITH_ARGS"),
             "stratégie CALL_PUBLIC_WITH_ARGS attendue pour case92")
-        assertTrue(output.contains("sut.configure("),
-            "appel sut.configure(...) attendu pour initialiser config")
+        assertTrue(output.contains("orderService.configure("),
+            "appel orderService.configure(...) attendu pour initialiser config")
     }
 
     // ── case93 : chaîne transitive ───────────────────────────────────────────
@@ -133,9 +136,9 @@ class PromptBuilderTest {
     fun `case93 transitive chain renders the BFS callChain`() {
         val output = buildFor(Fixtures.case93(),
             "com.testproject.case93.OrderService", "calculate")
-        assertTrue(output.contains("## Champ `cache`"),
+        assertTrue(output.contains("## Field `cache`"),
             "section champ cache absente du rendu case93")
-        assertTrue(output.contains("Stratégie : CALL_PUBLIC_TRANSITIVE"),
+        assertTrue(output.contains("Strategy: CALL_PUBLIC_TRANSITIVE"),
             "stratégie CALL_PUBLIC_TRANSITIVE attendue pour case93")
         // La chaîne doit apparaître textuellement (séparateur ' → ').
         assertTrue(output.contains(" → "),
@@ -173,9 +176,9 @@ class PromptBuilderTest {
         val output = buildFor(Fixtures.case93(),
             "com.testproject.case93.OrderService", "calculate")
 
-        // Verrou texte dans la section "Stubs requis avant l'appel".
-        assertTrue(output.contains("Stubs requis avant l'appel"),
-            "section 'Stubs requis avant l'appel' attendue (downstream produit l'appel externe)")
+        // Verrou texte dans la section "Required stubs before the call".
+        assertTrue(output.contains("Required stubs before the call"),
+            "section 'Required stubs before the call' attendue (downstream produit l'appel externe)")
         assertTrue(output.contains("Loader") && output.contains("load"),
             "le stub doit mentionner Loader et load (call externe atteint via buildCache)")
     }
@@ -189,8 +192,8 @@ class PromptBuilderTest {
         val output = buildFor(Fixtures.case93(),
             "com.testproject.case93.OrderService", "calculate")
 
-        assertTrue(output.contains("# Sous-méthodes internes"),
-            "section '# Sous-méthodes internes' attendue dès qu'au moins une " +
+        assertTrue(output.contains("# Internal sub-methods"),
+            "section '# Internal sub-methods' attendue dès qu'au moins une " +
                 "méthode intra-SUT est référencée par le protocole d'init")
         assertTrue(output.contains("buildCache"),
             "buildCache doit figurer parmi les sous-méthodes internes (callee " +
@@ -209,9 +212,9 @@ class PromptBuilderTest {
         val output = buildFor(Fixtures.case92(),
             "com.testproject.case92.OrderService", "calculate")
 
-        // §6 — bloc « Code source : ```java …``` » sous la signature cible.
-        assertTrue(output.contains("Code source :"),
-            "bloc 'Code source :' attendu pour la méthode cible (§6)")
+        // §6 — bloc « Source code: ```java …``` » sous la signature cible.
+        assertTrue(output.contains("Source code:"),
+            "bloc 'Source code:' attendu pour la méthode cible (§6)")
         // Fragments caractéristiques du body case92.calculate (cf Fixtures.kt).
         // Verrouille que le LLM voit la logique réelle, pas seulement la signature.
         assertTrue(output.contains("if (request == null)"),
@@ -255,8 +258,8 @@ class PromptBuilderTest {
         val mocksEnd = if (nextSection >= 0) nextSection else output.length
         val mocksSection = output.substring(mocksStart, mocksEnd)
 
-        assertFalse(mocksSection.contains("Code source :"),
-            "la section # Mocks ne doit JAMAIS contenir 'Code source :' — " +
+        assertFalse(mocksSection.contains("Source code:"),
+            "la section # Mocks ne doit JAMAIS contenir 'Source code:' — " +
                 "§3.3 interdit la lecture du corps des méthodes externes")
         assertFalse(mocksSection.contains("```java"),
             "la section # Mocks ne doit jamais ouvrir un bloc ```java " +

@@ -60,22 +60,22 @@ class Step4GapsTest {
         }
         val output = render(fake, "$pkg.OrderService", "calculate")
 
-        assertTrue(output.contains("- throws : java.io.IOException"),
+        assertTrue(output.contains("- throws (declared): java.io.IOException"),
             "le throws déclaré doit être rendu")
         assertTrue(
             output.contains(
-                "- exceptions lancées dans le corps : " +
+                "- exceptions thrown in body: " +
                     "java.lang.IllegalArgumentException (\"amount must be positive\")"
             ),
             "l'exception lancée avec son message constant doit être rendue"
         )
-        assertTrue(output.contains("- exceptions catchées : java.io.IOException"),
+        assertTrue(output.contains("- exceptions caught: java.io.IOException"),
             "le bloc catch doit être rendu")
-        assertTrue(output.contains("- branches :") && output.contains("  - IF: amount < 0"),
+        assertTrue(output.contains("- branches:") && output.contains("  - IF: amount < 0"),
             "la branche conditionnelle doit être rendue")
-        assertTrue(output.contains("- sources non-déterministes : java.time.LocalDateTime.now"),
+        assertTrue(output.contains("- non-deterministic sources: java.time.LocalDateTime.now"),
             "la source non-déterministe doit être rendue")
-        assertTrue(output.contains("- lambdas attendues : java.util.function.Function"),
+        assertTrue(output.contains("- expected lambdas: java.util.function.Function"),
             "la lambda attendue doit être rendue")
     }
 
@@ -90,9 +90,9 @@ class Step4GapsTest {
             }
         }
         val output = render(fake, "$pkg.OrderService", "calculate")
-        assertTrue(!output.contains("- exceptions lancées"),
+        assertTrue(!output.contains("- exceptions thrown in body"),
             "aucune puce d'exception quand l'analyse du corps est vide")
-        assertTrue(!output.contains("- branches :"),
+        assertTrue(!output.contains("- branches:"),
             "aucune puce de branche quand l'analyse du corps est vide")
     }
 
@@ -125,7 +125,7 @@ class Step4GapsTest {
             "le `new Receipt(...)` du corps doit être crawlé en DATA_STRUCTURE (BLOC 6d)")
 
         val output = render(fake, "$pkg.OrderService", "process")
-        assertTrue(output.contains("# Structures de données à construire"),
+        assertTrue(output.contains("# Data structures to construct"),
             "section structures de données attendue")
         assertTrue(output.contains("$pkg.Receipt"),
             "Receipt doit figurer dans les structures à construire")

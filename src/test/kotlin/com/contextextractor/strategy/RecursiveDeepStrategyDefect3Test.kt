@@ -74,8 +74,8 @@ class RecursiveDeepStrategyDefect3Test {
             "DomainB doit avoir été ajouté à la place de Logger via éviction LFU")
 
         // Trace dans truncationReasons : une éviction LFU enregistrée.
-        assertTrue(result.truncationReasons.any { it.contains("éviction LFU") },
-            "une éviction LFU doit être tracée. Vu: ${result.truncationReasons}")
+        assertTrue(result.truncationReasons.any { it.contains("LFU eviction") },
+            "une 'LFU eviction' doit être tracée (Bug Q anglais). Vu: ${result.truncationReasons}")
     }
 
     @Test
@@ -129,8 +129,8 @@ class RecursiveDeepStrategyDefect3Test {
         assertFalse("$pkg.DomainC" in result.mocks.keys,
             "DomainC doit avoir été dropé en FIFO, pas via éviction")
         // Aucune trace d'éviction LFU : pas de mock évinçable.
-        assertFalse(result.truncationReasons.any { it.contains("éviction LFU") },
-            "aucune éviction LFU ne doit avoir lieu entre mocks domaine. " +
+        assertFalse(result.truncationReasons.any { it.contains("LFU eviction") },
+            "aucune 'LFU eviction' ne doit avoir lieu entre mocks domaine. " +
                 "Vu: ${result.truncationReasons}")
     }
 
@@ -178,7 +178,7 @@ class RecursiveDeepStrategyDefect3Test {
         assertTrue("$pkg.DomainB" in result.mocks.keys)
         assertFalse("$pkg.DomainC" in result.mocks.keys,
             "DomainC doit être dropé par le filet FIFO (scores égaux, pas d'éviction)")
-        assertTrue(result.truncationReasons.any { it.contains("maxMockCount atteint") },
-            "trace FIFO attendue. Vu: ${result.truncationReasons}")
+        assertTrue(result.truncationReasons.any { it.contains("maxMockCount reached") },
+            "trace FIFO attendue (Bug Q anglais). Vu: ${result.truncationReasons}")
     }
 }

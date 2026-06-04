@@ -32,7 +32,8 @@ class SourceCollector(
 
     fun collect(
         field: ClassField,
-        selectedConstructor: SelectedConstructor
+        selectedConstructor: SelectedConstructor,
+        targetMethod: MethodSignature? = null
     ): List<InitSource> {
         val sources = mutableListOf<InitSource>()
 
@@ -47,11 +48,22 @@ class SourceCollector(
             ?.let { sources += InitSource.Constructor(parameterName = it.name) }
 
         // 3) Setter / MethodInitializer — parcours hiérarchie.
+        // Bug CC — exclure targetMethod des MethodInitializer candidates. Sinon
+        // un champ écrit (mais jamais lu) par target — typiquement un OUTPUT du
+        // target (`this.total = ...`, `this.rowCount = ...`) — verrait target
+        // élu en branche 6 comme `CALL_PUBLIC_WITH_ARGS`. Le LLM appellerait
+        // alors target dans `@BeforeEach`, avec toutes ses dépendances mockées,
+        // ce qui produit une cascade fragile : appel target → besoin de stubber
+        // `getStructurePage()` sur un @InjectMocks (pas un spy) → NotAMockException.
+        // En excluant target, ces fields tombent en branche 10 (auto-init), qui
+        // retourne `IMPLICIT` → le renderer les ignore proprement.
+        val targetCanonical = targetMethod?.canonical()
         for (classFqn in hierarchyFqns) {
             val cls = introspector.resolveClass(classFqn) ?: continue
             for (m in introspector.listMethods(cls)) {
                 if (m.name == "<init>") continue // §4.2 + V1 simplification
                 trySetter(field, m)?.let { sources += it }
+                if (targetCanonical != null && m.canonical() == targetCanonical) continue
                 tryMethodInitializer(field, m)?.let { sources += it }
             }
         }

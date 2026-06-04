@@ -107,20 +107,21 @@ class RecursiveDeepStrategyDefect1Test {
         stage.apply(ctx)
         val output = ctx.layers[LayerKind.CONTEXT] ?: error("layer CONTEXT absente")
 
-        assertTrue(output.contains("# Méthodes à stubber par spy (frontière framework)"),
+        assertTrue(output.contains("# Methods to stub via spy (framework boundary)"),
             "section dédiée doit être présente. Output:\n$output")
         assertTrue(output.contains("redirige"),
             "redirige doit figurer dans la section spy")
         assertTrue(output.contains("doAnswer(invocation -> null)") || output.contains("doReturn"),
             "le pattern Mockito spy doit être suggéré (doAnswer pour void/objet, " +
                 "doReturn typé pour primitive)")
-        assertTrue(output.contains("sut = spy(sut);"),
-            "l'instruction spy(sut) doit figurer")
+        // Bug R — variable dérivée du SUT (Controller → controller).
+        assertTrue(output.contains("controller = spy(controller);"),
+            "l'instruction spy(controller) doit figurer (variable name dérivée du SUT)")
         // Vérification inverse : redirige NE doit PAS apparaître dans la section
-        // « Sous-méthodes internes » (qui est l'autre cas).
+        // « Internal sub-methods » (qui est l'autre cas).
         val internalSection = output.substringAfter(
-            "# Sous-méthodes internes (information seulement, ne pas mocker)", missingDelimiterValue = "")
-            .substringBefore("# Méthodes à stubber par spy", missingDelimiterValue = "")
+            "# Internal sub-methods (informational only, do not mock)", missingDelimiterValue = "")
+            .substringBefore("# Methods to stub via spy", missingDelimiterValue = "")
         assertFalse(internalSection.contains("#redirige"),
             "redirige NE doit PAS être dans la section internes — frontière de test exclusive")
     }

@@ -234,7 +234,7 @@ class LayerCompositionStage(
             - Class name: [TargetClassName]Test
             - Package: [same package as target class]
             - Use @ExtendWith(MockitoExtension.class)
-            - Mocks via @Mock; SUT via @InjectMocks (unless explicit construction is required)
+            - Mocks via @Mock; the class under test via @InjectMocks (unless explicit construction is required)
             - Assertions: AssertJ ONLY (assertThat...)
             - Stubbing: Mockito ONLY (when/thenReturn/thenThrow)
 
@@ -250,11 +250,11 @@ class LayerCompositionStage(
               Example: `redirigerVersDetailsDeltaVecNominal()`, not `rediriger_vers_details_nominal()`.
 
             # Anti-hallucination contract (strict)
-            - NEVER stub a method on the SUT (via `doReturn(...).when(sut).xxx()`) unless
-              `xxx` appears explicitly in the CONTEXT section. Methods listed under
-              "Méthodes à stubber par spy" are the ONLY SUT methods you may stub.
-            - NEVER invent helper methods on the SUT (no `sut.getXxx()` unless `getXxx`
-              is in CONTEXT). If a field value is needed, mock the field's type instead.
+            - NEVER stub a method on the class under test (via `doReturn(...).when(...).xxx()`)
+              unless `xxx` appears explicitly in the CONTEXT section. Methods listed under
+              "Methods to stub via spy" are the ONLY class-under-test methods you may stub.
+            - NEVER invent helper methods on the class under test (no `cut.getXxx()` unless
+              `getXxx` is in CONTEXT). If a field value is needed, mock the field's type instead.
 
             # Imports — strict FQN copy (anti-hallucination)
             - For every type referenced in CONTEXT, copy its FQN VERBATIM into an import.
@@ -311,6 +311,80 @@ class LayerCompositionStage(
             - Cover each conditional branch listed in CONTEXT
             - Cover each exception listed in CONTEXT
 
+            # Checked exceptions on test methods (Bug Y)
+            - If CONTEXT lists `throws (declared): ExceptionType`, EVERY test method
+              that calls the target MUST declare `throws ExceptionType` on its
+              signature, OR catch it inside the method body.
+            - Java will REFUSE to compile a test method that calls a target
+              declaring a checked exception without handling it.
+              EXAMPLE invalid (will not compile):
+                @Test
+                void rechercher_nominal() {
+                    sut.rechercher(...);  // ← compile error: unreported exception
+                }
+              EXAMPLE valid:
+                @Test
+                void rechercher_nominal() throws AstreaFonctionnelleException {
+                    sut.rechercher(...);
+                }
+            - If MULTIPLE exceptions are declared, list them all comma-separated:
+              `throws AstreaFonctionnelleException, OtherException`.
+
+            # Typed Collections in stubs (Bug Z)
+            - `Collections.emptyMap()` / `Collections.emptyList()` return raw
+              `Map<K,V>` / `List<E>` — Java's inference often FAILS to match a
+              parameterised return type in `when(...).thenReturn(...)`.
+            - When stubbing a method whose generic return is `Map<String, Foo>`
+              or `List<Foo>`, use one of:
+                * Explicit type witness: `Collections.<String, Foo>emptyMap()`
+                * Constructor: `new HashMap<String, Foo>()` / `new ArrayList<Foo>()`
+                * `Map.of()` / `List.of()` (Java 9+) with concrete keys/values
+              EXAMPLE invalid (compile error: thenReturn cannot infer):
+                when(mock.getCriteres()).thenReturn(Collections.emptyMap());
+              EXAMPLE valid:
+                when(mock.getCriteres()).thenReturn(Collections.<String, CritereDTO>emptyMap());
+
+            # Verifying calls that receive in-body `new` instances (Bug AA)
+            - When the target body creates an object via `new Type()` and passes
+              it to a stubbed method, you CANNOT pass `new Type()` to `verify(...)`.
+              Mockito compares arguments via `equals()` — most domain classes
+              inherit `Object.equals()` which is IDENTITY-based, so the test's
+              instance is NEVER equal to the production instance.
+            - Use `any(Type.class)` matcher (or `ArgumentCaptor` to assert details).
+              EXAMPLE invalid (passes compile, fails at runtime):
+                verify(conversationModele).putModele(SUT.class, new ReferenceModele());
+              EXAMPLE valid:
+                verify(conversationModele).putModele(eq(SUT.class), any(ReferenceModele.class));
+            - Note: when ANY matcher is used for one arg, ALL args must use
+              matchers (Mockito rule) — wrap literals in `eq(...)`.
+
+            # Building instances for stub return values (Bug DD)
+            - When a stub returns a generic container like `List<ElementXxx>` or
+              `Map<String, ElementYyy>`, you need instances of the element type
+              to populate that container. If the element type is NOT listed
+              under `# Mocks` (because it was evicted by the mock budget, or
+              because the algorithm decided it is non-essential), DO NOT call
+              `new ElementXxx()`. Most domain classes have NO no-args constructor
+              — they require fields/IDs/labels that you do not have access to.
+            - Use `Mockito.mock(Type.class)` AD-HOC inside the test body to
+              fabricate an instance. This works for ANY class (even ones without
+              a public no-args constructor) and bypasses the need to know the
+              real constructor signature.
+              EXAMPLE invalid (runtime failure: NoSuchMethodError or compile error):
+                List<ElementsListeDeroulante> elements = new ArrayList<>();
+                elements.add(new ElementsListeDeroulante());  // ← ctor requires (String, String)
+              EXAMPLE valid:
+                List<ElementsListeDeroulante> elements = new ArrayList<>();
+                elements.add(mock(ElementsListeDeroulante.class));
+                elements.add(mock(ElementsListeDeroulante.class));
+            - This rule also applies to types mentioned in the truncation reasons
+              under "drop mock XYZ" — those types are still mockable ad-hoc;
+              they were only removed from the `@Mock` budget. Same recipe:
+              `mock(XYZ.class)`.
+            - If you just need a non-empty list/map to satisfy a `hasSize(N)`
+              or `isNotEmpty()` assertion, prefer `mock(T.class)` over `new T()`
+              for every element.
+
             # Wrapping rules for return types
             - Optional<T>          -> Optional.of(...) or Optional.empty()
             - CompletableFuture<T> -> CompletableFuture.completedFuture(...)
@@ -319,7 +393,7 @@ class LayerCompositionStage(
             # Untestable fields
             - If a field appears with strategy UNTESTABLE_AS_IS:
               - Generate a test method named [methodName]_TODO_untestable
-              - Body: fail("Test impossible à compléter sans refactor du SUT.");
+              - Body: fail("Test cannot be completed without refactoring the class under test.");
               - This single fail() call is the only allowed body — no comment, no Javadoc
 
             {IF tree.tronque == true}

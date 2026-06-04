@@ -77,11 +77,15 @@ class ContextResultTreeMapper {
 
     private fun targetMethodMetadata(result: ContextResult): Map<String, String> {
         val sig = result.targetMethod.signature
+        // Bug W — affichage avec génériques. `sig.canonical()` reste utilisé
+        // comme identité (lookup map / visited keys) ailleurs ; ici on n'écrase
+        // que la valeur de la metadata destinée au LLM.
+        val displayCanonical = "${sig.name}(${sig.parameters.joinToString(",") { renderType(it.type) }})"
         val out = mutableMapOf(
-            MetaKeys.METHOD_CANONICAL to sig.canonical(),
-            MetaKeys.METHOD_RETURN_TYPE to sig.returnType.fqName,
+            MetaKeys.METHOD_CANONICAL to displayCanonical,
+            MetaKeys.METHOD_RETURN_TYPE to renderType(sig.returnType),
             MetaKeys.METHOD_PARAMS to sig.parameters.joinToString(", ") {
-                "${it.name}:${it.type.fqName}"
+                "${it.name}:${renderType(it.type)}"
             },
             MetaKeys.TESTABILITY to result.testabilityDiagnostic.testable.toString()
         )
@@ -316,8 +320,11 @@ class ContextResultTreeMapper {
                 kind = NodeKind.INTERNAL_METHOD,
                 title = "$classFqn#${logic.signature.canonical()}",
                 metadata = buildMap {
+                    // Bug W — METHOD_CANONICAL identité (lookup) reste canonical(),
+                    // mais on l'enrichit pour le LLM via une display version sans
+                    // toucher au key.
                     put(MetaKeys.METHOD_CANONICAL, logic.signature.canonical())
-                    put(MetaKeys.METHOD_RETURN_TYPE, logic.signature.returnType.fqName)
+                    put(MetaKeys.METHOD_RETURN_TYPE, renderType(logic.signature.returnType))
                     if (logic.callSummaries.isNotEmpty()) {
                         put("internalCallSummaries", logic.callSummaries.joinToString("\n"))
                     }
@@ -385,8 +392,18 @@ class ContextResultTreeMapper {
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private fun signatureToOneLine(sig: MethodSignature): String {
-        val params = sig.parameters.joinToString(",") { it.type.fqName }
-        return "${sig.name}($params):${sig.returnType.fqName}"
+        val params = sig.parameters.joinToString(",") { renderType(it.type) }
+        return "${sig.name}($params):${renderType(sig.returnType)}"
+    }
+
+    // Bug W — rendu complet avec génériques. Sans cette fonction, un mock
+    // signature `getCriteresRecherche():java.util.Map<String, CritereDTO>`
+    // était rendu en `getCriteresRecherche():java.util.Map` — le LLM
+    // hallucinait `Map<String, Object>` et le stub Mockito ne compilait pas
+    // contre la vraie signature `Map<String, CritereDTO>`.
+    private fun renderType(type: com.contextextractor.core.extractor.ResolvedType): String {
+        if (type.typeArgs.isEmpty()) return type.fqName
+        return "${type.fqName}<${type.typeArgs.joinToString(",") { renderType(it) }}>"
     }
 
     // Walker DFS local — utilisé pour pré-construire l'index sans dépendre de

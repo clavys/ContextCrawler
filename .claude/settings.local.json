@@ -39,7 +39,13 @@
       "Bash(./gradlew compileTestKotlin --rerun-tasks --console=plain)",
       "Bash(./gradlew compileKotlin compileTestKotlin -q)",
       "Bash(./gradlew integrationTest -q)",
-      "PowerShell(.\\\\gradlew test --console=plain 2>&1 | Select-Object -Last 60)"
+      "PowerShell(.\\\\gradlew test --console=plain 2>&1 | Select-Object -Last 60)",
+      "Bash(awk -F'[= ]' '{t+=$2; f+=$4} END {print \"Total tests:\", t, \"Failures:\", f}')",
+      "Bash(awk -F'[= ]' '{t+=$2; f+=$4} END {print \"Total:\", t, \"Failures:\", f}')",
+      "Bash(xargs grep -h \"testsuite\")",
+      "Bash(xargs grep -h \"<testsuite \")",
+      "Bash(awk -F'\"' '{tests+=$2; skipped+=$4; failures+=$6; errors+=$8} END {print \"Total:\", tests, \"Skipped:\", skipped, \"Failures:\", failures, \"Errors:\", errors}')",
+      "Bash(awk '{tests+=$1; skipped+=$2; failures+=$3; errors+=$4} END {print \"Total:\", tests, \"Skipped:\", skipped, \"Failures:\", failures, \"Errors:\", errors}')"
     ]
   }
 }

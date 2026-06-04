@@ -1118,120 +1118,128 @@ data class ContexteResultat(
 > le contexte extrait. Les contraintes et la mission sont assemblées par les
 > stages suivants à partir des templates de PROMPT_FORMAT.md.
 
-```markdown
-# Classe sous test
-{sutFqName} {annotationsClasse}
-Hiérarchie : {hierarchie format A → B → C avec annotations}
+> **Bug Q (V1)** — Le rendu CONTEXT est désormais entièrement en anglais
+> (le spec ci-dessous garde le format en anglais pour matcher l'implémentation).
+> Spec doc rédigée en français (convention CLAUDE.md), output runtime en anglais
+> (consommé par le LLM).
+>
+> **Bug R (V1)** — La variable `sut` des patterns suggérés est désormais dérivée
+> du nom de la classe (ex : `SupervisionDeltaVecControleur` → `supervisionDeltaVecControleur`)
+> pour respecter la règle de naming `TypeName typeName`.
 
-# Méthode cible
+```markdown
+# Class under test
+{sutFqName} {annotationsClasse}
+Hierarchy: {hierarchie format A → B → C avec annotations}
+
+# Target method
 {signature complète, types qualifiés}
 {si corps non vide :}
-Code source :
+Source code:
 ```java
 {corps texte intégral, accolades incluses}
 ```
-- throws : {throwsDeclarees}
-- exceptions lancées dans le corps : {exceptionsLancees}
-- exceptions catchées : {exceptionsCatchees}
-- branches : {liste avec condition}
-- sources non-déterministes : {sourcesIndéter}
-- lambdas attendues : {lambdasAttendues}
+- throws (declared): {throwsDeclarees}
+- exceptions thrown in body: {exceptionsLancees}
+- exceptions caught: {exceptionsCatchees}
+- branches: {liste avec condition}
+- non-deterministic sources: {sourcesIndéter}
+- expected lambdas: {lambdasAttendues}
 
-# Instanciation du SUT
+# Class under test instantiation
 new {sutFqName}({paramètres avec types qualifiés})
 {si super(...)} super({argsSuper})
 
-# Protocole d'initialisation des champs
-À EXÉCUTER DANS L'ORDRE ci-dessous, dans @BeforeEach.
+# Field initialization protocol
+EXECUTE IN ORDER below, inside @BeforeEach.
 
 {Pour chaque champ dont strategieRecommandee != CONSTRUCTOR/IMPLICIT/MOCKITO_INJECT_MOCKS :}
 
-## Champ `{champ.nom}` : {champ.type}
-Stratégie : {strategieRecommandee.kind}
+## Field `{champ.nom}`: {champ.type}
+Strategy: {strategieRecommandee.kind}
 
-{selon kind :}
-SETTER :
-sut.{methode}(mockOf{type});
+{selon kind — {cut} = variable name dérivé du SUT, ex: "orderService" :}
+SETTER:
+{cut}.{methode}(mockOf{type});
 
-    CALL_POST_CONSTRUCT :
-      sut.{methode}();   // @PostConstruct
+    CALL_POST_CONSTRUCT:
+      {cut}.{methode}();   // @PostConstruct
 
-    CALL_PUBLIC :
-      sut.{methode}();
+    CALL_PUBLIC:
+      {cut}.{methode}();
 
-    CALL_PUBLIC_WITH_STUBS :
-      // Stubber d'abord :
+    CALL_PUBLIC_WITH_STUBS:
+      // Stub first:
       when({stub1.cible}.{stub1.methode}({stub1.argsTypes})).thenReturn(...);
-      // Puis :
-      sut.{methode}();
+      // Then:
+      {cut}.{methode}();
 
-    CALL_PUBLIC_WITH_ARGS :
-      sut.{methode}({arg1}, {arg2});  // construire selon section "Structures"
+    CALL_PUBLIC_WITH_ARGS:
+      {cut}.{methode}({arg1}, {arg2});  // construct per the "Data structures" section
 
-    CALL_PUBLIC_TRANSITIVE :
-      // Cette méthode publique assigne `{champ.nom}` via la chaîne :
+    CALL_PUBLIC_TRANSITIVE:
+      // This public method assigns `{champ.nom}` via the chain:
       //    {chaineAppels.join(' → ')}
-      // Effets de bord à connaître : {effetsDeBord}
-      // Stubs requis avant l'appel :
+      // Known side effects: {effetsDeBord}
+      // Required stubs before the call:
       {stubsRequis listés}
-      sut.{pointEntree.nom}({args});
+      {cut}.{pointEntree.nom}({args});
 
-    CALL_SAME_PACKAGE :
-      // Place le test dans le package {package du SUT}
-      sut.{methode}();
+    CALL_SAME_PACKAGE:
+      // Place the test in the same package as the class under test
+      {cut}.{methode}();
 
-    MOCKITO_INJECT_MOCKS :
-      // Rien à faire : Mockito injecte automatiquement ce champ @Autowired/@Inject
+    MOCKITO_INJECT_MOCKS:
+      // Nothing to do: Mockito injects this @Autowired/@Inject field automatically
 
-    UNTESTABLE_AS_IS :
-      // STOP : ce champ ne peut pas être initialisé sans refactor.
-      // Raison : {raison}
-      // Pistes : {pistesRefacto}
-      // Génère un test marqué TODO :
+    UNTESTABLE_AS_IS:
+      // STOP: this field cannot be initialized without refactoring.
+      // Reason: {raison}
+      // Hints: {pistesRefacto}
+      // Generate a test marked TODO:
       @Test
       void {methodeCible.nom}_TODO_untestable() {
-          fail("Test impossible à compléter sans refactor du SUT. Voir docstring.");
+          fail("Test cannot be completed without refactoring the class under test. See docstring.");
       }
 
-# Mocks (annoter @Mock {typeDeclare})
+# Mocks (annotate with @Mock {declaredType})
 {Pour chaque mock :}
-## {typeDeclare}  (concret : {classeConcrete})
-Méthodes à stubber :
+## {typeDeclare}  (concrete: {classeConcrete})
+Methods to stub:
 - {signatureMockee complète}
   {si throws : "throws {liste}"}
 
-# Sous-méthodes internes (information seulement, ne pas mocker)
+# Internal sub-methods (informational only, do not mock)
 {Pour chaque InternalLogic dont stubViaSpy == false :}
 ## {classe}#{méthode}{signature}
 {si corps non vide :}
-Code source :
+Source code:
 ```java
 {corps texte intégral, accolades incluses}
 ```
-- lance : {exceptions}
-- appels-clés : {résumé}
+- throws: {exceptions}
+- key calls: {résumé}
 
-# Méthodes à stubber par spy (frontière framework — §3.2bis)
+# Methods to stub via spy (framework boundary — §3.2bis)
 {Pour chaque InternalLogic dont stubViaSpy == true :}
 ## {classe}#{méthode}({argTypes})
-- Raison : appelle {préfixes matchés joints par ", "}
-- Pattern Mockito attendu dans @BeforeEach :
+- Reason: descends into {préfixes matchés joints par ", "}
+- Expected pattern in @BeforeEach:
   ```java
-  sut = spy(sut);
-  doAnswer(inv -> null).when(sut).{méthode}(any({argTypes[0]}.class));
-  // ou doReturn(<valeur>) si la méthode retourne autre chose que void
+  {cut} = spy({cut});
+  doAnswer(invocation -> null).when({cut}).{méthode}(any({argTypes[0]}.class));
+  // or doReturn(<typedDefault>) for primitive returns (boolean → false, int → 0, ...)
   ```
-- Ne PAS explorer le corps de cette méthode — elle est traitée comme une
-  frontière de test (le test ne traverse jamais ce code).
+- Do NOT explore the body — closed test boundary.
 
-# Structures de données à construire
+# Data structures to construct
 {Pour chaque DTO :}
 ## {fqName} [{pattern}]
 {selon pattern : RECORD, BUILDER, CONSTRUCTOR, SETTER_BASED, ENUM, SEALED, STATIC_FACTORY}
-Contraintes de validation : {annotationsValidation}
+Fields: {liste champ:type}
 
-# Appels statiques utilisateur détectés
-{si présents : "À mocker via Mockito.mockStatic({classe}.class) :"}
+# Detected user static calls
+{si présents : "Mock via Mockito.mockStatic({class}.class):"}
 ```
 
 > **Note** : les contraintes de génération, les garde-fous (no reflection, etc.)

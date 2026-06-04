@@ -45,21 +45,23 @@ class ContextRenderStageTest {
     @Test
     fun `case91 — CONTEXT layer contains all major sections`() {
         val output = render(Fixtures.case91(), "com.testproject.case91.OrderService", "calculate")
-        assertTrue(output.contains("# Classe sous test"), "section classe absente")
-        assertTrue(output.contains("# Méthode cible"), "section méthode cible absente")
-        assertTrue(output.contains("# Protocole d'initialisation des champs"),
+        assertTrue(output.contains("# Class under test"), "section classe absente")
+        assertTrue(output.contains("# Target method"), "section méthode cible absente")
+        assertTrue(output.contains("# Field initialization protocol"),
             "section protocole d'init absente alors que cache nécessite CALL_POST_CONSTRUCT")
         assertTrue(output.contains("# Mocks"), "section mocks absente")
-        assertTrue(output.contains("# Structures de données à construire"), "section DTOs absente")
+        assertTrue(output.contains("# Data structures to construct"), "section DTOs absente")
     }
 
     @Test
     fun `case91 — CALL_POST_CONSTRUCT renders sut_init() with PostConstruct comment`() {
         val output = render(Fixtures.case91(), "com.testproject.case91.OrderService", "calculate")
-        assertTrue(output.contains("## Champ `cache` : com.testproject.case91.DiscountCache"),
+        assertTrue(output.contains("## Field `cache`: com.testproject.case91.DiscountCache"),
             "en-tête de champ cache au format §6 attendu")
-        assertTrue(output.contains("Stratégie : CALL_POST_CONSTRUCT"))
-        assertTrue(output.contains("sut.init();"), "appel sut.init() attendu pour CALL_POST_CONSTRUCT")
+        assertTrue(output.contains("Strategy: CALL_POST_CONSTRUCT"))
+        // Variable name dérivé du SUT (OrderService → orderService).
+        assertTrue(output.contains("orderService.init();"),
+            "appel orderService.init() attendu pour CALL_POST_CONSTRUCT")
         assertTrue(output.contains("@PostConstruct"), "commentaire @PostConstruct attendu")
     }
 
@@ -67,7 +69,7 @@ class ContextRenderStageTest {
     fun `case91 — repository is implicit (MOCKITO_INJECT_MOCKS) so no init block`() {
         val output = render(Fixtures.case91(), "com.testproject.case91.OrderService", "calculate")
         // §6 ligne 1069 : on n'écrit PAS de bloc init pour MOCKITO_INJECT_MOCKS.
-        assertFalse(output.contains("## Champ `repository`"),
+        assertFalse(output.contains("## Field `repository`"),
             "repository @Autowired ne doit PAS apparaître dans le protocole d'init")
     }
 
@@ -91,14 +93,14 @@ class ContextRenderStageTest {
         val output = render(fake, "$pkg.SUT", "calculate")
 
         // Stratégie nommée explicitement (verrou label, pas simpleName).
-        assertTrue(output.contains("Stratégie : UNTESTABLE_AS_IS"),
+        assertTrue(output.contains("Strategy: UNTESTABLE_AS_IS"),
             "label UNTESTABLE_AS_IS attendu dans le rendu")
 
         // Bloc TODO §6 lignes 1108-1116 — chaque ligne est un verrou.
-        assertTrue(output.contains("// STOP : ce champ ne peut pas être initialisé sans refactor."),
+        assertTrue(output.contains("// STOP: this field cannot be initialized without refactoring."),
             "ligne d'arrêt obligatoire absente")
-        assertTrue(output.contains("// Raison :"), "ligne de raison absente")
-        assertTrue(output.contains("// Pistes :"), "ligne de pistes absente")
+        assertTrue(output.contains("// Reason:"), "ligne de raison absente")
+        assertTrue(output.contains("// Hints:"), "ligne de pistes absente")
         assertTrue(output.contains("@Test"), "annotation @Test du bloc TODO absente")
         assertTrue(output.contains("void cache_TODO_untestable()"),
             "signature de la méthode test marquée TODO absente")
@@ -107,9 +109,9 @@ class ContextRenderStageTest {
 
         // Au moins une piste de refactor doit être mentionnée (par défaut le
         // sélecteur en propose 2 : ajouter ctor / ajouter setter).
-        val pistesBlock = output.substringAfter("// Pistes :").substringBefore("// Génère")
-        assertTrue(pistesBlock.contains("//   - "),
-            "au moins une piste indentée attendue sous '// Pistes :'")
+        val hintsBlock = output.substringAfter("// Hints:").substringBefore("// Generate")
+        assertTrue(hintsBlock.contains("//   - "),
+            "au moins une piste indentée attendue sous '// Hints:'")
     }
 
     // ── Verrou diagnostic non-testable agrégé ────────────────────────────────
@@ -130,9 +132,9 @@ class ContextRenderStageTest {
         }
         val output = render(fake, "$pkg.SUT", "calculate")
         // Le champ DOIT figurer — c'est le piège qu'évite le verrou §6.
-        assertTrue(output.contains("## Champ `cache`"),
+        assertTrue(output.contains("## Field `cache`"),
             "un champ UNTESTABLE doit apparaître dans le rendu, jamais omis")
-        assertNotNull(output.lines().find { it.startsWith("# Protocole d'initialisation des champs") },
+        assertNotNull(output.lines().find { it.startsWith("# Field initialization protocol") },
             "section protocole d'init obligatoire dès qu'au moins un champ visible")
     }
 }

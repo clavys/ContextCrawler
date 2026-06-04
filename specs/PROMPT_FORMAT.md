@@ -153,7 +153,7 @@ Before returning the Java file, scan it line-by-line and verify:
 - Class name: [TargetClassName]Test
 - Package: [same package as target class]
 - Use @ExtendWith(MockitoExtension.class)
-- Mocks via @Mock; SUT via @InjectMocks (unless explicit construction is required)
+- Mocks via @Mock; the class under test via @InjectMocks (unless explicit construction is required)
 - Assertions: AssertJ ONLY (assertThat...)
 - Stubbing: Mockito ONLY (when/thenReturn/thenThrow)
 
@@ -169,11 +169,11 @@ Before returning the Java file, scan it line-by-line and verify:
   Example: `redirigerVersDetailsDeltaVecNominal()`, not `rediriger_vers_details_nominal()`.
 
 # Anti-hallucination contract (strict)
-- NEVER stub a method on the SUT (via `doReturn(...).when(sut).xxx()`) unless
-  `xxx` appears explicitly in the CONTEXT section. Methods listed under
-  "Méthodes à stubber par spy" are the ONLY SUT methods you may stub.
-- NEVER invent helper methods on the SUT (no `sut.getXxx()` unless `getXxx`
-  is in CONTEXT). If a field value is needed, mock the field's type instead.
+- NEVER stub a method on the class under test (via `doReturn(...).when(...).xxx()`)
+  unless `xxx` appears explicitly in the CONTEXT section. Methods listed under
+  "Methods to stub via spy" are the ONLY class-under-test methods you may stub.
+- NEVER invent helper methods on the class under test (no `cut.getXxx()` unless
+  `getXxx` is in CONTEXT). If a field value is needed, mock the field's type instead.
 
 # Imports — strict FQN copy (anti-hallucination)
 - For every type referenced in CONTEXT, copy its FQN VERBATIM into an import.
@@ -238,7 +238,7 @@ Before returning the Java file, scan it line-by-line and verify:
 # Untestable fields
 - If a field appears with strategy UNTESTABLE_AS_IS:
   - Generate a test method named [methodName]_TODO_untestable
-  - Body: fail("Test impossible à compléter sans refactor du SUT.");
+  - Body: fail("Test cannot be completed without refactoring the class under test.");
   - This single fail() call is the only allowed body — no comment, no Javadoc
 
 # Truncated context

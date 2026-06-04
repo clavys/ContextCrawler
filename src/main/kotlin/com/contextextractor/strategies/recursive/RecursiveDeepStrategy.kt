@@ -115,7 +115,29 @@ class RecursiveDeepStrategy : ContextStrategy {
         val trivialGetterFieldNames = resolveTrivialGetterFieldNames(
             introspector, hierarchyFqns, targetCalls
         )
-        val activeFields = directFieldAccesses + trivialGetterFieldNames
+        // Bug T — filet textuel sur le corps de target. PSI rate parfois
+        // l'accès `this.field` quand il sert de qualifieur dans une chaîne
+        // imbriquée — cas concret production :
+        //   this.supervisionDeltaVecModele.setAfficherResultats(true);
+        //   this.supervisionDeltaVecModele.setLienExportCsvVisible(
+        //       CollectionUtils.isNotEmpty(this.lignesResultatSupervisionDeltaVecDTO));
+        // sont absents de `listFieldAccesses` selon le contexte. Sans ce filet,
+        // `supervisionDeltaVecModele` n'entre pas dans `activeFields` →
+        // disparaît de `usefulFields` → mock SupervisionDeltaVecModele jamais
+        // émis → le LLM confond avec `tableauSupervisionDeltaVecModele` et
+        // produit du code qui ne compile pas.
+        // Le scan utilise la liste de TOUS les champs de la hiérarchie comme
+        // dictionnaire, puis vérifie `this.<name>` ou `<name>.` dans le body.
+        val allHierarchyFieldNames: Set<String> = hierarchy.flatMap { level ->
+            val cls = introspector.resolveClass(level.classFqn) ?: return@flatMap emptyList()
+            introspector.listFields(cls).map { it.name }
+        }.toSet()
+        val bodyMentionedFieldNames: Set<String> = allHierarchyFieldNames.filter { name ->
+            val esc = Regex.escape(name)
+            Regex("(?<!\\w)this\\.$esc(?!\\w)").containsMatchIn(targetBody) ||
+                Regex("(?<!\\w)$esc\\s*\\.").containsMatchIn(targetBody)
+        }.toSet()
+        val activeFields = directFieldAccesses + trivialGetterFieldNames + bodyMentionedFieldNames
         val usefulFields = collectUsefulFields(introspector, hierarchy, activeFields)
 
         // ── BLOC 4 : PROTOCOLE DE CONSTRUCTION DU SUT ─────────────────────────
@@ -156,6 +178,13 @@ class RecursiveDeepStrategy : ContextStrategy {
         ctx.essentialMockTypes += resolveTrivialGetterFieldTypes(
             introspector, hierarchyFqns, targetCalls
         )
+        // Bug T — types des champs détectés par scan textuel du body de
+        // target (cf. computation de `bodyMentionedFieldNames` plus haut).
+        // Les marquer essentiels protège du filtre `filteredFields` (Bug S)
+        // et de l'éviction par budget — même si le BFS PSI les rate.
+        ctx.essentialMockTypes += usefulFields
+            .filter { it.name in bodyMentionedFieldNames }
+            .map { it.type.fqName }
         // Marquer la racine SUT_BOOTSTRAP visitée — évite une re-entrée si BLOC 6
         // déclenche un appel au SUT lui-même (cas pathologique mais possible).
         ctx.visits.add(VisitKey(ExtractionMode.SUT_BOOTSTRAP, sut.fqn, targetMethod.name))
@@ -195,6 +224,9 @@ class RecursiveDeepStrategy : ContextStrategy {
         //   • dans l'usage transitif → garder
         //   • OU stratégie d'init non-MOCKITO (CONSTRUCTOR/SETTER/CALL_*/UNTESTABLE)
         //     → garder (intentionnellement documentée pour le LLM)
+        //   • OU (Bug S) type du champ marqué essentiel par target body — filet
+        //     de sécurité quand le BFS transitif rate un accès (chaînes
+        //     `this.field.method()` complexes ou getter trivial intermédiaire).
         //   • sinon (MOCKITO_INJECT_MOCKS + jamais touché) → drop
         val transitiveUsage = computeTransitiveFieldUsage(
             introspector, hierarchyFqns, targetMethod,
@@ -203,7 +235,18 @@ class RecursiveDeepStrategy : ContextStrategy {
         )
         val filteredFields = usefulFields.filter { f ->
             val strategy = block7.initProtocol[f.name]?.recommendedStrategy
-            f.name in transitiveUsage || strategy !is InitStrategy.MOCKITO_INJECT_MOCKS
+            f.name in transitiveUsage ||
+                strategy !is InitStrategy.MOCKITO_INJECT_MOCKS ||
+                // Bug S — type essentiel (touché par target body via Bug M ou
+                // returnType d'une signature stubée via Bug I). Cas concret
+                // production : `this.supervisionDeltaVecService.rechercherDeltaVec(...)`
+                // — le service est dans essentialMockTypes mais le BFS de
+                // computeTransitiveFieldUsage ne propage pas toujours `this.field`
+                // jusque dans `accessed` (chaîne d'appel imbriquée). Sans ce
+                // filet, le champ MOCKITO_INJECT_MOCKS est dropé et le mock
+                // correspondant est retiré par la réconciliation → le LLM
+                // hallucine `when(sut.getX()).thenReturn(...)`.
+                f.type.fqName in ctx.essentialMockTypes
         }
         val droppedFieldNames = (usefulFields - filteredFields).map { it.name }.toSet()
         val droppedFieldTypes = (usefulFields - filteredFields).map { it.type.fqName }.toSet()
@@ -443,9 +486,14 @@ class RecursiveDeepStrategy : ContextStrategy {
         // 4) Pour chaque champ utile, collecte sources + élit stratégie.
         //    LinkedHashMap pour conserver l'ordre d'insertion des champs (utile
         //    pour les renderers qui veulent énumérer dans l'ordre déclaratif).
+        // Bug CC — targetMethod transmis à SourceCollector pour qu'il l'exclue
+        // des MethodInitializer candidates. Un champ écrit (mais jamais lu) par
+        // target — typiquement un OUTPUT de target — ne doit pas voir target
+        // sélectionné comme stratégie d'init (sinon le LLM appelle target dans
+        // @BeforeEach et crashe en NotAMockException sur le @InjectMocks).
         val initProtocol = LinkedHashMap<String, FieldInitProtocol>()
         for (field in usefulFields) {
-            val sources = collector.collect(field, selectedConstructor)
+            val sources = collector.collect(field, selectedConstructor, targetMethod)
             val strategy = selector.choose(field, sources)
             initProtocol[field.name] = FieldInitProtocol(
                 field = field,
@@ -819,7 +867,7 @@ class RecursiveDeepStrategy : ContextStrategy {
         depth: Int
     ) {
         if (depth > ctx.budget.maxDepth) {
-            ctx.truncationReasons += "maxDepth dépassée à profondeur=$depth (cls=$classFqn)"
+            ctx.truncationReasons += "maxDepth exceeded at depth=$depth (cls=$classFqn)"
             return
         }
         val descriptor = ctx.introspector.resolveClass(classFqn)
@@ -832,9 +880,27 @@ class RecursiveDeepStrategy : ContextStrategy {
         )
         val descriptorMethods = if (descriptor != null) ctx.introspector.listMethods(descriptor)
         else emptyList()
-        val mode = ctx.classifier.classify(
+        val rawMode = ctx.classifier.classify(
             type, descriptor, callerContext, ctx.sutHierarchyFqns, descriptorMethods
         )
+        // Bug U — promotion DATA_STRUCTURE → MOCK_EXTERNAL pour les types
+        // « modeles » de SUT. Cas concret production : `SupervisionDeltaVecModele`
+        // n'a que des setters/getters (rule 10 → DATA_STRUCTURE), mais il est
+        // référencé comme champ du contrôleur et target appelle dessus :
+        //   this.supervisionDeltaVecModele.setAfficherResultats(true);
+        //   this.supervisionDeltaVecModele.setLienExportCsvVisible(...);
+        // Sans promotion, il va dans dataStructures (jamais émis comme @Mock)
+        // et le LLM attribue les setters au mock voisin par nom
+        // (TableauSupervisionDeltaVecModele) → erreurs de compilation.
+        // Conditions cumulées (anti faux-positif) :
+        //   • DATA_STRUCTURE issu du classifier
+        //   • FIELD_OF_SUT (chemin de champ direct, pas un paramètre/typearg DTO)
+        //   • type marqué essentiel (Bug M/T → target appelle des méthodes dessus)
+        val mode = if (rawMode == ExtractionMode.DATA_STRUCTURE &&
+            callerContext == CallerContext.FIELD_OF_SUT &&
+            classFqn in ctx.essentialMockTypes) {
+            ExtractionMode.MOCK_EXTERNAL
+        } else rawMode
         when (mode) {
             ExtractionMode.MOCK_EXTERNAL -> recurseMockExternal(ctx, classFqn, descriptor, methodToCall, depth)
             ExtractionMode.DATA_STRUCTURE -> recurseDataStructure(ctx, classFqn, depth)
@@ -868,13 +934,13 @@ class RecursiveDeepStrategy : ContextStrategy {
         depth: Int
     ) {
         if (depth > ctx.budget.maxDepth) {
-            ctx.truncationReasons += "maxDepth dépassée — INTERNAL_LOGIC $classFqn#${method.canonical()}"
+            ctx.truncationReasons += "maxDepth exceeded — INTERNAL_LOGIC $classFqn#${method.canonical()}"
             return
         }
         val key = VisitKey(ExtractionMode.INTERNAL_LOGIC, classFqn, method.canonical())
         if (!ctx.visits.isNew(key)) return
         if (ctx.internalLogics.size >= ctx.budget.maxInternalLogicCount) {
-            ctx.truncationReasons += "maxInternalLogicCount atteint — drop $classFqn#${method.name}"
+            ctx.truncationReasons += "maxInternalLogicCount reached — drop $classFqn#${method.name}"
             return
         }
 
@@ -963,9 +1029,9 @@ class RecursiveDeepStrategy : ContextStrategy {
             when {
                 weakestFramework != null && weakestFramework.value.score() < newScore -> {
                     ctx.truncationReasons +=
-                        "maxMockCount éviction LFU — drop ${weakestFramework.key} " +
+                        "maxMockCount LFU eviction — drop ${weakestFramework.key} " +
                             "(framework/infra, score=${weakestFramework.value.score()}) " +
-                            "au profit de $classFqn (score=$newScore)"
+                            "in favor of $classFqn (score=$newScore)"
                     ctx.mocks.remove(weakestFramework.key)
                 }
                 isNewEssential -> {
@@ -974,18 +1040,18 @@ class RecursiveDeepStrategy : ContextStrategy {
                         .minByOrNull { it.value.score() }
                     if (weakestNonEssential != null) {
                         ctx.truncationReasons +=
-                            "maxMockCount éviction essentielle — drop ${weakestNonEssential.key} " +
-                                "(non-essentiel) au profit de $classFqn (essentiel : paramètre " +
-                                "target ou returnType de mock)"
+                            "maxMockCount essential eviction — drop ${weakestNonEssential.key} " +
+                                "(non-essential) in favor of $classFqn (essential: target " +
+                                "parameter or mock returnType)"
                         ctx.mocks.remove(weakestNonEssential.key)
                     } else {
                         ctx.truncationReasons +=
-                            "maxMockCount atteint — drop mock essentiel $classFqn (tous essentiels)"
+                            "maxMockCount reached — drop essential mock $classFqn (all essential)"
                         return
                     }
                 }
                 else -> {
-                    ctx.truncationReasons += "maxMockCount atteint — drop mock $classFqn"
+                    ctx.truncationReasons += "maxMockCount reached — drop mock $classFqn"
                     return
                 }
             }
@@ -1062,11 +1128,11 @@ class RecursiveDeepStrategy : ContextStrategy {
         val key = VisitKey(ExtractionMode.DATA_STRUCTURE, classFqn, null)
         if (!ctx.visits.isNew(key)) return
         if (ctx.dataStructures.size >= ctx.budget.maxDtoCount) {
-            ctx.truncationReasons += "maxDtoCount atteint — drop DTO $classFqn"
+            ctx.truncationReasons += "maxDtoCount reached — drop DTO $classFqn"
             return
         }
         if (depth > ctx.budget.maxDepth) {
-            ctx.truncationReasons += "maxDepth dépassée — DATA_STRUCTURE $classFqn"
+            ctx.truncationReasons += "maxDepth exceeded — DATA_STRUCTURE $classFqn"
             return
         }
 
@@ -1079,7 +1145,7 @@ class RecursiveDeepStrategy : ContextStrategy {
                 fqName = classFqn,
                 pattern = ConstructionPattern.SETTER_BASED
             )
-            ctx.truncationReasons += "DTO non résolvable: $classFqn"
+            ctx.truncationReasons += "DTO not resolvable: $classFqn"
             return
         }
 
@@ -1297,7 +1363,7 @@ class RecursiveDeepStrategy : ContextStrategy {
         depth: Int
     ) {
         if (depth > ctx.budget.maxDepth) {
-            ctx.truncationReasons += "maxDepth dépassée — DTO field type ${type.fqName}"
+            ctx.truncationReasons += "maxDepth exceeded — DTO field type ${type.fqName}"
             return
         }
         // Mode courant via le classifier en contexte FIELD_OF_DTO.
@@ -1439,7 +1505,7 @@ class RecursiveDeepStrategy : ContextStrategy {
         if (!ctx.visits.isNew(key)) return
         if (ctx.internalLogics.size >= ctx.budget.maxInternalLogicCount) {
             ctx.truncationReasons +=
-                "maxInternalLogicCount atteint — drop STUB_VIA_SPY $classFqn#${method.name}"
+                "maxInternalLogicCount reached — drop STUB_VIA_SPY $classFqn#${method.name}"
             return
         }
         val logicKey = "$classFqn#${method.canonical()}"

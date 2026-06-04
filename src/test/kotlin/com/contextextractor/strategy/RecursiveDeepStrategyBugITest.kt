@@ -77,8 +77,8 @@ class RecursiveDeepStrategyBugITest {
             "InputDTO (paramètre target) est essentiel → doit être préservé. " +
                 "Vu: ${result.mocks.keys}")
         // Vérifier que la trace d'éviction essentielle est présente.
-        assertTrue(result.truncationReasons.any { it.contains("éviction essentielle") },
-            "trace éviction essentielle attendue. Vu: ${result.truncationReasons}")
+        assertTrue(result.truncationReasons.any { it.contains("essential eviction") },
+            "trace 'essential eviction' attendue (Bug Q anglais). Vu: ${result.truncationReasons}")
     }
 
     @Test
