@@ -52,9 +52,10 @@ Test UNITAIRE pur, pas d'intégration.
 1. **Le mode est une décision contextuelle**, pas un attribut intrinsèque du type. Un même type peut être mocké dans un contexte et instancié dans un autre.
 2. **Le registre de visites est typé** : `(mode, classe, méthode?)`. Pas de collision possible.
 3. **Tout ce qui finit dans le prompt doit être utile au compilateur** : signature exacte, type qualifié, pattern de construction.
-4. **Budget explicite** : profondeur max, nombre max de DTO, troncature en queue.
+4. **Budget structurel uniquement** : `maxDepth` borne le BFS du graphe de références ; pas de cap de résultat sur les mocks/DTOs/internals (cf §2.3 et RAPPORT_CONTEXT §9 défaut #3).
 5. **Pas de reflection** : si un champ privé n'est pas accessible par un chemin légitime, le rapport surface explicitement le problème (`UNTESTABLE_AS_IS`) avec pistes de refacto.
-6. **Le prompt produit est paramétré** par la stack de test (JUnit 5 + Mockito + AssertJ).
+6. **Le prompt produit est paramétré** par la stack de test (JUnit 5 + Mockito + AssertJ) et par un **profil de tuning LLM** swappable (§6bis).
+7. **Pipeline 2-pass deferred classification** (V1.2) : l'énumération du graphe de références (PASSE 1) est strictement séparée de la décision de mode (PASSE 2) et de la matérialisation (PASSE 3). Cf §3.0.
 
 ---
 
@@ -147,23 +148,86 @@ data class CleVisite(
 
 ### 2.3 Budget
 
+**Refactor V1.2 (Phase 4)** : les caps de résultat `nbDtoMax`, `nbMocksMax`,
+`nbInternesMax` ont été supprimés. Cf RAPPORT_CONTEXT §9.7 pour la
+motivation (Bug A/I/M/DD générés par l'éviction LFU réactive).
+
 ```kotlin
 data class Budget(
-    val profondeurMax    : Int = 6,
-    val profondeurInitMax: Int = 2,    // chaînes d'init transitives
-    val profondeurGraphe : Int = 4,    // remontée du graphe d'appels inverse
-    val nbDtoMax         : Int = 15,
-    val nbMocksMax       : Int = 10,
-    val nbInternesMax    : Int = 12,
-    val tokensEstimésMax : Int = 8000
+    val maxDepth           : Int = 6,      // profondeur BFS ReferenceGraphBuilder
+    val maxInitDepth       : Int = 2,      // chaînes d'init transitives (BLOC 7)
+    val maxGraphDepth      : Int = 4,      // remontée callGraph intra-SUT
+    val maxEstimatedTokens : Int = 50_000  // coupure prompt avant troncature
 )
 ```
 
-Dépassement → marquer `resultat.tronque = true` et empiler dans `aExplorerEnPriorite`.
+**Sémantique V1.2** :
+- `maxDepth` borne le **crawl** PASSE 1 (pas le résultat). Tout type
+  atteignable depuis target en ≤ maxDepth sauts est conservé.
+- Les autres champs sont purement structurels (profondeurs BFS, taille du
+  prompt final).
+- Aucune éviction réactive — un mock essentiel ne peut plus être perdu par
+  saturation d'un cap.
+
+Dépassement (typiquement `maxDepth` atteint sur une branche profonde) →
+marquer `resultat.tronque = true` et logger la raison dans
+`truncationReasons` (consommé par la layer CONSTRAINTS section
+« # Truncated context »).
 
 ---
 
 ## 3. Pseudo-code par mode
+
+### 3.0 Pipeline V1.2 — 2-pass deferred classification
+
+**Contexte historique** : la V1.1 implémentait un BLOC 6 single-pass eager —
+chaque type rencontré était classifié immédiatement par sa shape (suffixe,
+méthodes), avec promotions/évictions à la volée pour rattraper les erreurs
+de contexte. Cette approche a produit 4 défauts structurels (cf
+RAPPORT_CONTEXT §9.1) résolus par le refactor V1.2.
+
+**Pipeline V1.2 actif** (cf `RecursiveDeepStrategy.extractCore`) :
+
+```
+BLOC 1-5 (inchangés — hiérarchie, target analysis, usefulFields, ctor, setters)
+  ↓
+PASSE 1 — ReferenceGraphBuilder
+  • BFS exhaustif borné par budget.maxDepth
+  • Énumère TOUTES les références (champs SUT, params target, returns,
+    calls instance/static, instantiations) SANS classifier
+  • Détecte les frontières framework (Bug N transitive) AU CALL SITE
+  • Propage les sous-classes SEALED et les fields des DTOs Phase 4
+  ↓
+PASSE 2 — DefaultContextAwareClassifier
+  • Consomme la `ClassReference` complète (tous ses usages agrégés)
+  • 16 règles en ordre de priorité — décide UNE FOIS avec contexte complet
+  • Règle 8 (instance call) raffinée : MOCK seulement si mutator/business
+    (args ou non-pure-getter), sinon laisse les règles DTO décider
+  • Pas de promotion post-hoc, pas de filtre rétroactif
+  ↓
+PASSE 3 — ResultMaterializer
+  • Transforme (graphe + classifications) → MockInfo / DataStructureInfo
+    / InternalLogic / StaticCallInfo
+  • Pour chaque MOCK : agrège signatures appelées depuis `AsCallTarget`
+  • Pour chaque DTO : détection pattern §3.4 + capture Phase 2/3
+  • Pour chaque InternalLogic : body + analyse + call summaries
+  • Frontières framework → entrée stubViaSpy=true sans lecture de body
+  ↓
+BLOC 7 (inchangé — init protocol, Bug CC préservé)
+  ↓
+filteredFields + reconcileMocksWithInitProtocol (cleanup prompt)
+```
+
+**Invariants V1.2** :
+- Aucun type atteignable depuis target n'est silencieusement évincé (défaut #3 RAPPORT)
+- Aucune décision de mode n'est prise avant énumération complète (défaut #2 RAPPORT)
+- Le classifier raisonne sur le **contexte d'usage** (UsageSite), pas la shape (défaut #1 RAPPORT)
+- L'init protocol exclut target des sources MethodInitializer (Bug CC, défaut #4 RAPPORT)
+
+**§3.1-3.5 ci-dessous** décrivent les modes du classifier — la sémantique
+est identique en V1.2, mais l'application n'est plus séquentielle eager :
+les 16 règles du `DefaultContextAwareClassifier` agrègent tous les
+contextes d'usage avant de produire un Mode unique par classe.
 
 ### 3.1 Mode `SUT_BOOTSTRAP`
 
@@ -1245,6 +1309,83 @@ Fields: {liste champ:type}
 > **Note** : les contraintes de génération, les garde-fous (no reflection, etc.)
 > et la mission finale sont assemblés par les stages suivants à partir des
 > templates de **PROMPT_FORMAT.md**. Ce fragment ne les répète pas.
+
+---
+
+## 6bis. CONSTRAINTS — split Base + Tuning LLM (V1.2 Phase 5)
+
+**Motivation** : V1.1 mélangeait dans un seul bloc `DEFAULT_CONSTRAINTS` :
+- des **règles universelles** Java/JUnit/Mockito (applicables quel que soit le LLM cible)
+- des **patches hand-holding spécifiques à Qwen 3.6 35B** (Bug Y/Z/AA/DD) observés en production
+
+Pour un futur LLM puissant (Claude Opus, GPT-4o…), inclure les patches Qwen
+noierait les règles structurelles et gaspillerait des tokens. La V1.2 Phase 5
+sépare les deux et rend le profil swappable via Settings.
+
+### 6bis.1 Architecture
+
+```
+core/prompt/constraints/
+├── BaseConstraints.kt          ← règles universelles (~150 lignes)
+├── QwenTuningConstraints.kt    ← patches Bug Y/Z/AA/DD (~65 lignes)
+└── ConstraintsProfile.kt       ← sealed interface
+```
+
+`LayerCompositionStage.Templates.defaults(profile)` compose à la volée :
+- `BaseConstraints.TEXT` (prefix, jusqu'à `# Coverage scope`)
+- `profile.tuningText` (inséré juste avant `# Wrapping rules for return types`)
+- `BaseConstraints.TEXT` (suffix, depuis `# Wrapping rules`)
+
+L'ordre V1.1 est préservé byte-pour-byte quand le profil Qwen est actif —
+verrou de rétro-compat pour les tests historiques.
+
+### 6bis.2 Profils livrés
+
+| Profil | id | Contenu | Cible |
+|--------|----|---------|---|
+| `Qwen36b35bProfile` | `"qwen"` | Bug Y + Z + AA + DD | Qwen 3.6 35B (défaut V1) |
+| `NoTuningProfile`   | `"none"` | Aucun patch | LLM puissants (Claude/GPT-4) |
+
+`resolveConstraintsProfile(id)` mappe la string config → profil. Fallback
+safe : id inconnu → Qwen (jamais NoTuning par accident).
+
+### 6bis.3 Patches Qwen-tuning isolés
+
+| Bug | Modèle d'échec observé | Recipe LLM |
+|-----|------------------------|------------|
+| Y   | Test n'a pas `throws ExceptionType` alors que target en déclare | « EVERY test method ... MUST declare throws ExceptionType » |
+| Z   | `when(...).thenReturn(Collections.emptyMap())` au lieu de `Collections.<K,V>emptyMap()` | « use Explicit type witness » |
+| AA  | `verify(mock).foo(new DTO())` au lieu de `any(DTO.class)` | « Use any(Type.class) matcher » |
+| DD  | `new ElementXxx()` pour peupler un List<ElementXxx> sans no-arg ctor | « Use Mockito.mock(Type.class) AD-HOC inside the test body » |
+
+### 6bis.4 Wiring config
+
+```
+ContextCrawlerSettings (UI)
+       ↓
+ContextExtractorConfig.llm.tuningProfile: String  (défaut "qwen")
+       ↓
+ContextExtractorService.buildContext
+       ↓
+PromptBuilder.defaultPipelineForProfileId(id)
+       ↓
+LayerCompositionStage(Templates.defaults(profile))
+```
+
+Le `tuningProfileId` est également propagé jusqu'au `PromptCopyDialog`
+pour que le rebuild « Copy with enrichment » utilise le même profil que
+l'extraction initiale.
+
+### 6bis.5 Ajouter un nouveau profil
+
+1. Créer `core/prompt/constraints/ClaudeOpusConstraints.kt` (ou autre nom)
+2. Ajouter `object ClaudeOpusProfile : ConstraintsProfile { ... }`
+3. Étendre la branche `when` dans `resolveConstraintsProfile`
+4. Ajouter `"claude-opus"` au `ComboBox` du `ContextCrawlerConfigurable`
+
+Aucune modification de `BaseConstraints` ni de tests existants n'est
+nécessaire — le verrou « base ne contient pas de Bug X » est testé par
+`ConstraintsProfileSplitTest.kt`.
 
 ---
 

@@ -209,8 +209,8 @@ class ContextExtractorConfigBinderTest {
         assertEquals("openai", cfg.llm.provider)
         // YAML écrase Defaults sur maxDepth.
         assertEquals(10, cfg.budget.maxDepth)
-        // maxDtoCount non touché → reste défaut Budget().maxDtoCount = 15.
-        assertEquals(15, cfg.budget.maxDtoCount)
+        // maxGraphDepth non touché → reste défaut Budget().maxGraphDepth = 4.
+        assertEquals(4, cfg.budget.maxGraphDepth)
         // Validation Budget passée (10 ∈ [1,20]) — ne throw pas.
     }
 }

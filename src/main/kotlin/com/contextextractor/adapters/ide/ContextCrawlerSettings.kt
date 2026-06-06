@@ -47,6 +47,11 @@ class ContextCrawlerSettings : PersistentStateComponent<ContextCrawlerSettings.S
 
         @JvmField var llmProvider: String = "claude"
         @JvmField var llmModel: String = "claude-sonnet-4-6"
+
+        // Phase 5 — profil de tuning des CONSTRAINTS du prompt. Valeurs :
+        // "qwen" (défaut, patches Y/Z/AA/DD) | "none" (règles universelles
+        // seulement). Cf `core/prompt/constraints/ConstraintsProfile.kt`.
+        @JvmField var llmTuningProfile: String = "qwen"
     }
 
     private var internalState: State = State()

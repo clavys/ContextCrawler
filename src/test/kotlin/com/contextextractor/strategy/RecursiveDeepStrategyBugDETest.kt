@@ -75,7 +75,10 @@ class RecursiveDeepStrategyBugDETest {
         }
         val sut = fake.resolveClass("$pkg.Controller")!!
         val target = fake.listMethodsOf("$pkg.Controller").single { it.name == "handle" }
-        val result = strategy.extractCore(fake, DefaultClassifier(), StrategyConfig(budget = Budget(maxMockCount = 10)), sut, target)
+        // V1.2 — Budget(maxMockCount=…) supprimé (cf RAPPORT_CONTEXT §9 défaut #3).
+        // En V1.2, les types essentiels (Svc + Session via trivial getter) sont
+        // garantis par le classifier context-aware (PASSE 2), pas par un cap.
+        val result = strategy.extractCore(fake, DefaultClassifier(), StrategyConfig(), sut, target)
 
         // Essentiels touchés par target → conservés.
         assertTrue("$pkg.Svc" in result.mocks.keys,

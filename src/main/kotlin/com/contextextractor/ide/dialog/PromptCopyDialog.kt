@@ -39,7 +39,10 @@ import javax.swing.JTextArea
 class PromptCopyDialog(
     project: Project,
     private val tree: ContextTree,
-    private val initialPrompt: String
+    private val initialPrompt: String,
+    // Phase 5 — profil de tuning des CONSTRAINTS pour le rebuild "Copy".
+    // Null = défaut Qwen pour rétro-compat.
+    private val tuningProfileId: String? = null
 ) : DialogWrapper(project) {
 
     private val enrichmentArea = JTextArea(3, 80).apply {
@@ -96,7 +99,9 @@ class PromptCopyDialog(
             // est vide / blanche, `PromptBuilder.build()` ignore la layer
             // USER_ENRICHMENT (cf. PromptBuilder.build : `isNullOrBlank`).
             val enrichment = enrichmentArea.text.trim().takeIf { it.isNotEmpty() }
-            val finalPrompt = PromptBuilder.defaultPipeline().build(tree, enrichment)
+            val finalPrompt = PromptBuilder
+                .defaultPipelineForProfileId(tuningProfileId)
+                .build(tree, enrichment)
             CopyPasteManager.getInstance().setContents(StringSelection(finalPrompt))
         }
     }

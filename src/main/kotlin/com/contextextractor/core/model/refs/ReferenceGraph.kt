@@ -1,5 +1,7 @@
 package com.contextextractor.core.model.refs
 
+import com.contextextractor.core.extractor.MethodSignature
+
 // Graphe de références — résultat de la PASSE 1 du pipeline V1.2.
 //
 // **Forme** : Map immuable FQN → ClassReference. L'ordre d'itération suit
@@ -24,6 +26,10 @@ package com.contextextractor.core.model.refs
 // only. Tests faciles, threadsafe by-construction.
 data class ReferenceGraph(
     val byFqn: Map<String, ClassReference>,
+    // Méthodes intra-SUT visitées par le BFS — alimentera InternalLogic en
+    // PASSE 3. Distinct de byFqn car les internals sont par-MÉTHODE, pas par
+    // classe.
+    val visitedInternalMethods: List<VisitedMethod> = emptyList(),
     // Raisons d'arrêt du BFS (depth limit, classe non résolvable...) propagées
     // au ContextResult final via le materializer.
     val truncationReasons: List<String> = emptyList()
@@ -53,3 +59,16 @@ data class ReferenceGraph(
         val EMPTY = ReferenceGraph(emptyMap())
     }
 }
+
+// Méthode intra-SUT visitée par le BFS — alimente `InternalLogic` en PASSE 3.
+//
+// `isFrameworkBoundary` distingue les méthodes qui descendent dans un
+// préfixe framework (typiquement javax.faces/* sur les controleurs JSF) —
+// celles-ci seront matérialisées avec `stubViaSpy = true` et leur corps
+// ne sera pas lu.
+data class VisitedMethod(
+    val ownerFqn: String,
+    val signature: MethodSignature,
+    val isFrameworkBoundary: Boolean = false,
+    val frameworkPrefixesHit: List<String> = emptyList()
+)

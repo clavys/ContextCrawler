@@ -91,15 +91,40 @@ class DefaultContextAwareClassifier : ContextAwareClassifier {
             return ExtractionMode.STATIC_UTILITY
         }
 
-        // Règle 8 — appel d'instance détecté → MOCK_EXTERNAL.
+        // Règle 8 — appel d'instance MUTATEUR ou BUSINESS → MOCK_EXTERNAL.
         //
-        // C'est LA règle qui élimine Bug U natif : un modele avec setters dont
-        // target appelle `setX()` reçoit `AsCallTarget` pendant Phase 1, et
-        // cette règle déclenche AVANT la règle DTO (rules 9-11). Pas besoin
-        // de promotion post-hoc.
-        if (ref.isCalledAsInstance) return ExtractionMode.MOCK_EXTERNAL
+        // Affinage post-tests V1.2 : déclencher MOCK uniquement si au moins un
+        // call site est :
+        //   • un appel avec arguments (typiquement setter `setX(value)`,
+        //     méthode business `doSomething(arg)`), OU
+        //   • une méthode dont le nom n'est PAS un pur accesseur
+        //     (= NE commence PAS par `get` / `is` / `equals` / `hashCode` / `toString`).
+        //
+        // Si TOUS les appels sont des getters purs (no-arg, get*/is*), la
+        // sémantique est « lecture pure de données » → DTO préférable :
+        // le test construit une instance avec les valeurs voulues et le SUT
+        // y accède naturellement. Cas concret case00 (OrderEntity.getId(),
+        // getReference(), getAmount()) ou case92 (OrderRequest.getId(),
+        // getReference()) — V1.1 les classait DTO via rule 10, V1.2 les
+        // ramène au même résultat sans patch.
+        //
+        // Bug U préservé : `modele.setX(true)` a 1 arg → MOCK. ✓
+        // Bug DD préservé : les services concernés sont interfaces ou Spring
+        // → rule 13/14 les attrape AVANT rule 16 même si rule 8 ne fire pas.
+        if (ref.isCalledAsInstance && hasMutatorOrBusinessCall(ref)) {
+            return ExtractionMode.MOCK_EXTERNAL
+        }
 
-        // Règles 9-11 — patterns DTO structurels.
+        // Règles 9-16 — patterns structurels.
+        // ORDRE V1.2 (révisé post-tests) : on regarde d'abord les patterns DTO
+        // explicites (Enum/Sealed/Record/Lombok), puis l'instantiation forcée,
+        // PUIS les indicateurs MOCK structurels (interface, Spring), PUIS la
+        // règle « all-trivial » (cas POJO/entity).
+        //
+        // Justification de l'ordre interface AVANT all-trivial : une interface
+        // dont toutes les méthodes sont des getters (ex : TableauModele avec
+        // `getCriteresRecherche()`) est par définition un contrat à mocker, pas
+        // un DTO concret. Le test BB de la prod le valide.
         if (descriptor != null) {
             // Règle 9 — ENUM / SEALED / RECORD natifs.
             if (descriptor.isEnum || descriptor.isSealed || descriptor.isRecord) {
@@ -109,46 +134,66 @@ class DefaultContextAwareClassifier : ContextAwareClassifier {
             if (descriptor.annotations.any { it in LOMBOK_DATA_ANNOTATIONS }) {
                 return ExtractionMode.DATA_STRUCTURE
             }
-            // Règle 11 — Toutes méthodes triviales (V1.1 rule 10 — préservé).
+        }
+
+        // Règle 11 — `new Type()` détecté dans le body → DTO forcé.
+        // Priorité sur "interface" car `new SomeIface() {...}` (anonyme) ne
+        // peut PAS être remplacé par un @Mock — le code de prod construit
+        // l'instance, le test doit la matérialiser.
+        if (ref.isInstantiatedInBody) return ExtractionMode.DATA_STRUCTURE
+
+        if (descriptor != null) {
+            // Règle 12 — interface ou abstract → MOCK_EXTERNAL.
+            // Déplacée AVANT rule "all trivial" : une interface getter-only
+            // (ex : TableauModele#getCriteresRecherche) reste un contrat
+            // mockable, pas un DTO.
+            if (descriptor.isInterface || descriptor.isAbstract) {
+                return ExtractionMode.MOCK_EXTERNAL
+            }
+            // Règle 13 — Spring service annotations.
+            // Avant rule "all trivial" : un @Service avec uniquement des
+            // getters reste un service à mocker (cas rare mais correct).
+            if (descriptor.annotations.any { it in SPRING_SERVICE_ANNOTATIONS }) {
+                return ExtractionMode.MOCK_EXTERNAL
+            }
+            // Règle 14 — Toutes méthodes triviales (V1.1 rule 10 — préservé).
+            // S'applique aux POJO / @Entity / record-like concrets : OrderEntity
+            // (case00), OrderRequest (case92).
             if (descriptorMethods.isNotEmpty() &&
                 descriptorMethods.all { isAccessorOrTrivial(it) }) {
                 return ExtractionMode.DATA_STRUCTURE
             }
         }
 
-        // Règle 12 — `new Type()` détecté dans le body → DTO forcé.
-        // Si le code de prod fait `new X()`, on ne peut pas remplacer par un
-        // mock — le test doit construire une vraie instance ou une factory.
-        if (ref.isInstantiatedInBody) return ExtractionMode.DATA_STRUCTURE
-
-        // Règles 13-15 — heuristiques mock-by-shape (interfaces, Spring, surface).
-        if (descriptor != null) {
-            // Règle 13 — interface ou abstract → MOCK (V1.1 rule 8 préservé).
-            if (descriptor.isInterface || descriptor.isAbstract) {
-                return ExtractionMode.MOCK_EXTERNAL
-            }
-            // Règle 14 — Spring service annotations.
-            if (descriptor.annotations.any { it in SPRING_SERVICE_ANNOTATIONS }) {
-                return ExtractionMode.MOCK_EXTERNAL
-            }
-        }
-
         // Règle 15 — Sur la surface de target (param/return) sans déclencheur
-        // autre : MOCK par défaut pour permettre l'isolation.
-        // Garde-fou : si descriptor est null (type non résolvable), on ne sait
-        // pas s'il a un ctor utilisable → MOCK est plus sûr.
+        // autre + descriptor introuvable → MOCK par sécurité.
         if (descriptor == null && ref.isOnTargetSurface) {
             return ExtractionMode.MOCK_EXTERNAL
         }
 
         // Règle 16 — Default DTO. V1.2 inverse le défaut V1.1.
-        // Justification : si on arrive ici, la classe n'est ni appelée, ni
-        // instanciée, ni Spring, ni interface. C'est très probablement une
-        // data class présente comme type-arg ou champ inerte → DTO.
         return ExtractionMode.DATA_STRUCTURE
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
+
+    // Refinement V1.2 rule 8 — vrai dès qu'au moins une signature appelée
+    // est un mutateur (a des args) ou une méthode business (ne commence pas
+    // par get/is/equals/hashCode/toString). Sinon, tous les appels sont des
+    // getters purs → on laisse fall-through pour permettre le classement DTO
+    // (cas concret : entity.getId() lu par target → on construit l'entity).
+    private fun hasMutatorOrBusinessCall(ref: ClassReference): Boolean {
+        return ref.instanceCallSites.any { site ->
+            val name = site.call.methodName
+            val hasArgs = site.call.argTypes.isNotEmpty()
+            val isPureGetter = !hasArgs && (
+                name.startsWith("get") ||
+                    name.startsWith("is") ||
+                    name == "equals" || name == "hashCode" || name == "toString"
+                )
+            !isPureGetter
+        }
+    }
 
     private fun isSystemType(fqn: String): Boolean {
         if (fqn in PRIMITIVES_AND_VOID) return true

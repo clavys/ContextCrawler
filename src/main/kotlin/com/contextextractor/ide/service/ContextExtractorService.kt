@@ -76,8 +76,17 @@ class ContextExtractorService(private val project: Project) {
         val tree: ContextTree = ApplicationManager.getApplication()
             .runReadAction(Computable { strategy.extract(input) })
 
-        val prompt = PromptBuilder.defaultPipeline().build(tree)
-        return BuildResult(prompt = prompt, outputMode = config.outputMode, tree = tree)
+        // Phase 5 — profil de tuning des CONSTRAINTS sélectionné via config
+        // (Settings UI + YAML + defaults). Cf RAPPORT_CONTEXT §9.9.
+        val prompt = PromptBuilder
+            .defaultPipelineForProfileId(config.llm.tuningProfile)
+            .build(tree)
+        return BuildResult(
+            prompt = prompt,
+            outputMode = config.outputMode,
+            tree = tree,
+            tuningProfileId = config.llm.tuningProfile
+        )
     }
 
     // Construit le LayeredConfig depuis les 3 sources V1 + applique le binder.
@@ -100,7 +109,10 @@ class ContextExtractorService(private val project: Project) {
     data class BuildResult(
         val prompt: String,
         val outputMode: ContextExtractorConfig.OutputMode,
-        val tree: ContextTree
+        val tree: ContextTree,
+        // Phase 5 — propagé jusqu'au dialog pour que le rebuild "Copy"
+        // utilise le même profil que l'extraction initiale.
+        val tuningProfileId: String? = null
     ) {
         // Détection du préfixe sentinelle posé par PromptBuilder quand le SUT
         // est non-testable au niveau global. L'action lit ce flag pour router

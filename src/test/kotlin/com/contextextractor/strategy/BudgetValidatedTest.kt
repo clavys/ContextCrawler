@@ -73,10 +73,10 @@ class BudgetValidatedTest {
     fun `negative count fields are rejected with their key`() {
         // Verrou : chaque clé YAML doit produire son propre message
         // d'erreur — pas un message générique « budget invalid ».
+        // V1.2 — maxDtoCount/maxMockCount/maxInternalLogicCount supprimés
+        // (cf RAPPORT_CONTEXT §9 défaut #3 : V1.2 n'évince plus de résultats
+        // par cap). Les cas restants sont les profondeurs structurelles.
         val negativeCases = listOf(
-            "budget.maxDtoCount" to { Budget(maxDtoCount = -1).validated() },
-            "budget.maxMockCount" to { Budget(maxMockCount = -1).validated() },
-            "budget.maxInternalLogicCount" to { Budget(maxInternalLogicCount = -1).validated() },
             "budget.maxInitDepth" to { Budget(maxInitDepth = -1).validated() },
             "budget.maxGraphDepth" to { Budget(maxGraphDepth = 0).validated() }
             // ↑ maxGraphDepth min=1 (BFS doit pouvoir descendre d'au moins 1)
@@ -108,17 +108,10 @@ class BudgetValidatedTest {
             "maxEstimatedTokens hors plage clampé à 200_000 max, était: ${budget.maxEstimatedTokens}")
     }
 
-    @Test
-    fun `oversized counts are clamped silently`() {
-        val budget = Budget(
-            maxDtoCount = 1000,
-            maxMockCount = 1000,
-            maxInternalLogicCount = 1000
-        ).validated()
-        assertTrue(budget.maxDtoCount <= 200)
-        assertTrue(budget.maxMockCount <= 200)
-        assertTrue(budget.maxInternalLogicCount <= 200)
-    }
+    // V1.2 — Test "oversized counts are clamped silently" supprimé.
+    // Les caps maxDtoCount/maxMockCount/maxInternalLogicCount ont été retirés
+    // de Budget (cf RAPPORT_CONTEXT §9 défaut #3) : V1.2 n'évince plus les
+    // résultats par cap quantitatif — seul `maxDepth` borne le crawl PASSE 1.
 
     // ── Cas limite : maxInitDepth=0 est ACCEPTÉ ──────────────────────────────
 

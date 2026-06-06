@@ -12,6 +12,7 @@ import com.contextextractor.core.model.SelectedConstructor
 import com.contextextractor.core.model.refs.ClassReference
 import com.contextextractor.core.model.refs.ReferenceGraph
 import com.contextextractor.core.model.refs.UsageSite
+import com.contextextractor.core.model.refs.VisitedMethod
 
 // Builder de la PASSE 1 — V1.2.
 //
@@ -98,6 +99,7 @@ class ReferenceGraphBuilder(
 
         return ReferenceGraph(
             byFqn = ctx.toMap(),
+            visitedInternalMethods = ctx.visitedInternalMethods.toList(),
             truncationReasons = ctx.truncationReasons.toList()
         )
     }
@@ -158,11 +160,18 @@ class ReferenceGraphBuilder(
         ownerFqn: String,
         depth: Int
     ) {
-        // Si la méthode descend dans une frontière framework, on STOP — son
-        // corps ne sera pas testé (STUB_VIA_SPY).
-        if (frameworkPrefixes.isNotEmpty() &&
-            detectFrameworkBoundary(method).isNotEmpty()
-        ) return
+        // Enregistrer la méthode visitée — sauf si c'est la target elle-même
+        // (depth == 0) : target n'apparaît pas dans `# Sous-méthodes internes`.
+        // La détection de frontière framework se fait AU CALL SITE (sur la
+        // méthode enfant), pas ici sur la méthode courante. Sinon target
+        // serait skip dès qu'elle descend transitivement dans le framework
+        // (cas typique controleur JSF).
+        if (depth > 0) {
+            ctx.visitedInternalMethods.add(VisitedMethod(
+                ownerFqn = ownerFqn,
+                signature = method
+            ))
+        }
 
         val calls = introspector.listMethodCalls(method)
         val bodyAnalysis = introspector.analyzeMethodBody(method)
@@ -187,6 +196,19 @@ class ReferenceGraphBuilder(
                 if (isTrivialGetter(calledMethod)) {
                     // Bug P préservé — le champ derrière le getter est ajouté
                     // comme AsFieldOfSut via le seed initial ; pas d'action ici.
+                    return@forEach
+                }
+                // Bug N préservé — détection transitive : si la méthode appelée
+                // descend dans un préfixe framework, on l'enregistre comme
+                // stubViaSpy SANS visiter son corps. Vérification au call site.
+                val frameworkHits = detectFrameworkBoundary(calledMethod, ctx.hierarchyFqns)
+                if (frameworkHits.isNotEmpty()) {
+                    ctx.visitedInternalMethods.add(VisitedMethod(
+                        ownerFqn = call.targetType,
+                        signature = calledMethod,
+                        isFrameworkBoundary = true,
+                        frameworkPrefixesHit = frameworkHits
+                    ))
                     return@forEach
                 }
                 ctx.methodQueue.add(MethodToVisit(calledMethod, call.targetType, depth + 1))
@@ -264,6 +286,25 @@ class ReferenceGraphBuilder(
                 if (ref.fqn in ctx.hierarchyFqns) return@forEach
                 if (ref.fqn.startsWith("java.") || ref.fqn.startsWith("javax.") ||
                     ref.fqn.startsWith("jakarta.") || ref.fqn.startsWith("kotlin.")) return@forEach
+                // §3.4 V1.1 préservé : ENUM ne déclenche PAS de Phase 4 — les
+                // constantes sont des valeurs, pas des types à crawler.
+                if (descriptor.isEnum) {
+                    ctx.visitedDtoForFields.add(ref.fqn)
+                    return@forEach
+                }
+                // SEALED : Phase 4 sur les sous-classes permises (pas sur
+                // listFields qui pourrait contenir des champs hérités sans
+                // intérêt). Reste fidèle au §3.4 V1.1.
+                if (descriptor.isSealed) {
+                    ctx.visitedDtoForFields.add(ref.fqn)
+                    descriptor.permittedSubclasses.forEach { subFqn ->
+                        ctx.register(subFqn,
+                            UsageSite.AsFieldOfReferencedClass(ref.fqn, "<sealed-sub>"))
+                    }
+                    return@forEach
+                }
+                // RECORD traité comme classe ordinaire : ses composants sont
+                // accessibles via listFields et doivent être explorés normalement.
                 ctx.visitedDtoForFields.add(ref.fqn)
                 introspector.listFields(descriptor).forEach { f ->
                     ctx.register(
@@ -323,12 +364,46 @@ class ReferenceGraphBuilder(
         return true
     }
 
-    private fun detectFrameworkBoundary(method: MethodSignature): List<String> {
+    private fun detectFrameworkBoundary(
+        method: MethodSignature,
+        hierarchyFqns: Set<String> = emptySet(),
+        maxBfsDepth: Int = 8
+    ): List<String> {
         if (frameworkPrefixes.isEmpty()) return emptyList()
-        val calls = introspector.listMethodCalls(method)
-        return calls.mapNotNull { c ->
-            frameworkPrefixes.firstOrNull { p -> c.targetType.startsWith(p) }
-        }.distinct()
+        // Bug N préservé : détection TRANSITIVE intra-SUT. Si `redirige(1)`
+        // ne touche pas directement javax.faces mais y descend via
+        // `redirige(2) → redirige(3) → javax.faces`, on signale tout de
+        // même `redirige(1)` comme frontière framework. Le test stub alors
+        // l'ENTRÉE de la cascade, pas la feuille — pattern attendu Mockito 4.x
+        // pour éviter d'exécuter la cascade côté SUT.
+        val visited = mutableSetOf<String>()
+        val queue = ArrayDeque<Pair<MethodSignature, Int>>()
+        queue.add(method to 0)
+        val hits = LinkedHashSet<String>()
+        while (queue.isNotEmpty()) {
+            val (m, d) = queue.removeFirst()
+            if (!visited.add(m.canonical())) continue
+            if (d > maxBfsDepth) continue
+            val calls = introspector.listMethodCalls(m)
+            calls.forEach { c ->
+                frameworkPrefixes.firstOrNull { p -> c.targetType.startsWith(p) }
+                    ?.let { hits += it }
+            }
+            // Descente transitive uniquement si on dispose de la hiérarchie SUT
+            // (mode rétro-compatible : si vide, détection directe seulement).
+            if (hierarchyFqns.isNotEmpty()) {
+                calls.forEach { c ->
+                    if (c.targetType !in hierarchyFqns) return@forEach
+                    val cls = introspector.resolveClass(c.targetType) ?: return@forEach
+                    val candidates = introspector.listMethods(cls).filter { it.name == c.methodName }
+                    val next = candidates.firstOrNull { sig ->
+                        sig.parameters.map { it.type.fqName } == c.argTypes
+                    } ?: candidates.firstOrNull() ?: return@forEach
+                    queue.add(next to d + 1)
+                }
+            }
+        }
+        return hits.toList()
     }
 
     private fun isUserStatic(classFqn: String): Boolean =
@@ -352,6 +427,9 @@ class ReferenceGraphBuilder(
         val methodQueue: ArrayDeque<MethodToVisit> = ArrayDeque()
         val visitedMethods: MutableSet<String> = mutableSetOf()
         val visitedDtoForFields: MutableSet<String> = mutableSetOf()
+        // Méthodes intra-SUT visitées — alimente InternalLogic en PASSE 3.
+        // Distinct de visitedMethods (qui sert juste à dédoublonner le BFS).
+        val visitedInternalMethods: MutableList<VisitedMethod> = mutableListOf()
         val truncationReasons: MutableList<String> = mutableListOf()
 
         fun register(fqn: String, usage: UsageSite) {

@@ -89,7 +89,8 @@ class ContextExtractorConfigBinder(private val layered: LayeredConfig) {
             model = layered.get<String>("llm.model") ?: defaults.model,
             // Number couvre Int/Long/Double — un YAML `temperature: 0` (Int)
             // doit produire 0.0 (Double) sans crash.
-            temperature = layered.get<Number>("llm.temperature")?.toDouble() ?: defaults.temperature
+            temperature = layered.get<Number>("llm.temperature")?.toDouble() ?: defaults.temperature,
+            tuningProfile = layered.get<String>("llm.tuningProfile") ?: defaults.tuningProfile
         )
     }
 
@@ -108,10 +109,6 @@ class ContextExtractorConfigBinder(private val layered: LayeredConfig) {
         maxDepth = layered.get<Int>("budget.maxDepth") ?: defaults.maxDepth,
         maxInitDepth = layered.get<Int>("budget.maxInitDepth") ?: defaults.maxInitDepth,
         maxGraphDepth = layered.get<Int>("budget.maxGraphDepth") ?: defaults.maxGraphDepth,
-        maxDtoCount = layered.get<Int>("budget.maxDtoCount") ?: defaults.maxDtoCount,
-        maxMockCount = layered.get<Int>("budget.maxMockCount") ?: defaults.maxMockCount,
-        maxInternalLogicCount = layered.get<Int>("budget.maxInternalLogicCount")
-            ?: defaults.maxInternalLogicCount,
         maxEstimatedTokens = layered.get<Int>("budget.maxEstimatedTokens")
             ?: defaults.maxEstimatedTokens
     )

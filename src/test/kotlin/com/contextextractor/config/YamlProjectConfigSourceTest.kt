@@ -161,7 +161,8 @@ class YamlProjectConfigSourceTest {
         assertEquals(200_000, cfg.get<Int>("budget.maxEstimatedTokens"))
         // Les autres clés du Budget restent les défauts (verrou demandé : on
         // ne PERD pas les clés non touchées par l'overlay).
-        assertEquals(15, cfg.get<Int>("budget.maxDtoCount"))
+        // V1.2 — maxDtoCount supprimé, on vérifie maxGraphDepth à la place.
+        assertEquals(4, cfg.get<Int>("budget.maxGraphDepth"))
     }
 
     @Test
@@ -183,9 +184,6 @@ class YamlProjectConfigSourceTest {
             maxDepth = cfg.get<Int>("budget.maxDepth")!!,
             maxInitDepth = cfg.get<Int>("budget.maxInitDepth")!!,
             maxGraphDepth = cfg.get<Int>("budget.maxGraphDepth")!!,
-            maxDtoCount = cfg.get<Int>("budget.maxDtoCount")!!,
-            maxMockCount = cfg.get<Int>("budget.maxMockCount")!!,
-            maxInternalLogicCount = cfg.get<Int>("budget.maxInternalLogicCount")!!,
             maxEstimatedTokens = cfg.get<Int>("budget.maxEstimatedTokens")!!
         )
         // Aucune des valeurs ci-dessus n'est < 0 — validated() doit produire

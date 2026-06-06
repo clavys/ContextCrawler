@@ -33,7 +33,8 @@ class IntellijSettingsSource(
         "outputMode" to state.outputMode,
         "llm" to mapOf(
             "provider" to state.llmProvider,
-            "model" to state.llmModel
+            "model" to state.llmModel,
+            "tuningProfile" to state.llmTuningProfile
         )
     )
 }

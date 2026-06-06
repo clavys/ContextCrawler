@@ -68,45 +68,13 @@ class PromptLanguageAndNamingTest {
             "label français 'Code source :' doit être traduit en 'Source code:'")
     }
 
-    @Test
-    fun `Bug Q — truncation reasons are emitted in English`() {
-        // Force le truncation en saturant maxMockCount=1 avec un service essentiel
-        // ET un parasite. Le parasite est dropé avec un message en anglais.
-        val pkg = "com.test.bugq.trunc"
-        val fake = fixture {
-            klass("$pkg.SvcA", isInterface = true) {
-                method("doA", returns = T("java.lang.String"))
-            }
-            klass("$pkg.Parasite", isInterface = true)
-            klass("$pkg.Ctrl") {
-                field("svcA", T("$pkg.SvcA"),
-                    annotations = listOf("org.springframework.beans.factory.annotation.Autowired"))
-                field("parasite", T("$pkg.Parasite"),
-                    annotations = listOf("org.springframework.beans.factory.annotation.Autowired"))
-                method("handle", returns = T("java.lang.String"),
-                    body = "return svcA.doA();") {
-                    reads("$pkg.Ctrl", "svcA")
-                    calls("$pkg.SvcA", "doA")
-                }
-            }
-        }
-        val sut = fake.resolveClass("$pkg.Ctrl")!!
-        val target = fake.listMethodsOf("$pkg.Ctrl").single { it.name == "handle" }
-        val tightBudget = StrategyConfig(
-            budget = com.contextextractor.core.strategy.Budget(maxMockCount = 1)
-        )
-        val result = strategy.extractCore(fake, DefaultClassifier(), tightBudget, sut, target)
-
-        // Au moins un message de truncation doit être présent, en anglais.
-        assertTrue(result.truncationReasons.any {
-            it.contains("maxMockCount reached") || it.contains("drop mock")
-        }, "trace truncation en anglais attendue. Vu: ${result.truncationReasons}")
-        // Les anciens messages français ne doivent plus jamais sortir.
-        assertFalse(result.truncationReasons.any { it.contains("atteint") },
-            "le mot 'atteint' (FR) ne doit plus apparaître. Vu: ${result.truncationReasons}")
-        assertFalse(result.truncationReasons.any { it.contains("éviction") },
-            "le mot 'éviction' (FR) ne doit plus apparaître. Vu: ${result.truncationReasons}")
-    }
+    // V1.2 — Le test "Bug Q truncation reasons emitted in English" est supprimé.
+    // V1.1 produisait des messages "maxMockCount reached" / "drop mock" lors de
+    // l'éviction LFU des mocks. V1.2 supprime l'éviction par budget (cf
+    // RAPPORT_CONTEXT §9 défaut #3) : aucun message de ce type n'est émis.
+    // Les truncation reasons V1.2 sont émises uniquement par le
+    // ReferenceGraphBuilder pour `maxCrawlDepth` ou DTO field propagation
+    // hitting max iterations — déjà en anglais par construction.
 
     @Test
     fun `Bug R — CONSTRAINTS section refers to 'class under test' instead of 'SUT'`() {

@@ -28,7 +28,11 @@ data class ContextExtractorConfig(
     data class LlmConfig(
         val provider: String = "claude",
         val model: String = "claude-sonnet-4-6",
-        val temperature: Double = 0.2
+        val temperature: Double = 0.2,
+        // Phase 5 — profil de tuning des CONSTRAINTS. Cf
+        // `core/prompt/constraints/ConstraintsProfile.kt`. Défaut « qwen »
+        // pour rétro-compat avec V1.1.
+        val tuningProfile: String = "qwen"
     )
 
     data class PromptConfig(

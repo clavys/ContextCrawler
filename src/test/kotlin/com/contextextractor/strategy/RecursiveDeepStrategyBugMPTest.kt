@@ -37,55 +37,12 @@ class RecursiveDeepStrategyBugMPTest {
     private val strategy = RecursiveDeepStrategy()
     private val pkg = "com.test.bugmp"
 
-    @Test
-    fun `Bug M — service called from target body survives tight budget`() {
-        // Setup réplique du cas SupervisionDeltaVecControleur :
-        // 3 @Autowired parasites (non appelés) + 1 service appelé.
-        // Budget = 3 → si CalledSvc n'est PAS essentiel, il est évincé.
-        val fake = fixture {
-            klass("$pkg.CalledSvc", isInterface = true) {
-                method("doRealWork", returns = T("java.lang.String"))
-            }
-            klass("$pkg.ParasiteA", isInterface = true)
-            klass("$pkg.ParasiteB", isInterface = true)
-            klass("$pkg.ParasiteC", isInterface = true)
-            klass("$pkg.Ctrl") {
-                field("calledSvc", T("$pkg.CalledSvc"),
-                    annotations = listOf("org.springframework.beans.factory.annotation.Autowired"))
-                field("parasiteA", T("$pkg.ParasiteA"),
-                    annotations = listOf("org.springframework.beans.factory.annotation.Autowired"))
-                field("parasiteB", T("$pkg.ParasiteB"),
-                    annotations = listOf("org.springframework.beans.factory.annotation.Autowired"))
-                field("parasiteC", T("$pkg.ParasiteC"),
-                    annotations = listOf("org.springframework.beans.factory.annotation.Autowired"))
-                method("handle", returns = T("java.lang.String"),
-                    body = "return this.calledSvc.doRealWork();") {
-                    reads("$pkg.Ctrl", "calledSvc")
-                    calls("$pkg.CalledSvc", "doRealWork")
-                }
-            }
-        }
-        val sut = fake.resolveClass("$pkg.Ctrl")!!
-        val target = fake.listMethodsOf("$pkg.Ctrl").single { it.name == "handle" }
-        val tightBudget = StrategyConfig(budget = Budget(maxMockCount = 3))
-        val result = strategy.extractCore(fake, DefaultClassifier(), tightBudget, sut, target)
-
-        assertTrue("$pkg.CalledSvc" in result.mocks.keys,
-            "CalledSvc (appelé directement dans le body) DOIT être préservé. " +
-                "Vu: ${result.mocks.keys}")
-        // Bug D + Bug M coopèrent : CalledSvc est reachable depuis target (un
-        // appel direct compte), donc il entre en PRIORITÉ HAUTE en BLOC 6a et
-        // n'a pas besoin d'évincer — c'est un parasite qui est dropé en bout
-        // de chaîne. La trace de drop confirme que le budget a été atteint.
-        assertTrue(result.truncationReasons.any { it.contains("Parasite") || it.contains("drop mock") },
-            "au moins un parasite doit être dropé (preuve que le budget=3 est saturé). " +
-                "Vu: ${result.truncationReasons}")
-        // Au plus 2 parasites sur 3 dans les mocks (CalledSvc + 2 = budget=3).
-        val parasitesInMocks = result.mocks.keys.count { it.contains("Parasite") }
-        assertTrue(parasitesInMocks <= 2,
-            "au plus 2 parasites dans les mocks (CalledSvc + 2 = budget=3). " +
-                "Vu: ${result.mocks.keys}")
-    }
+    // V1.2 — Le test "Bug M service called from target body survives tight budget"
+    // est supprimé : il assertait sur l'éviction LFU V1.1 (maxMockCount=3, traces
+    // "drop mock", limite 2 parasites). V1.2 n'évince plus — tous les services
+    // appelés sont conservés naturellement (rule 8 du classifier → MOCK), et
+    // les parasites @Autowired non utilisés sont dropés par `mocksAfterFieldFilter`
+    // sans message de troncature. Les 3 autres tests de ce fichier restent valides.
 
     @Test
     fun `Bug M — return type of method called on returned mock is essential`() {
@@ -119,15 +76,18 @@ class RecursiveDeepStrategyBugMPTest {
         }
         val sut = fake.resolveClass("$pkg.Ctrl2")!!
         val target = fake.listMethodsOf("$pkg.Ctrl2").single { it.name == "handle" }
-        val tightBudget = StrategyConfig(budget = Budget(maxMockCount = 2))
-        val result = strategy.extractCore(fake, DefaultClassifier(), tightBudget, sut, target)
+        // V1.2 — Budget(maxMockCount=…) supprimé. L'invariant Bug M reste :
+        // Service2 (appelé direct) + ResultDTO2 (méthode chaînée) sont
+        // conservés par la classification context-aware. Les parasites parA/parB
+        // sont filtrés par mocksAfterFieldFilter (jamais touchés).
+        val result = strategy.extractCore(fake, DefaultClassifier(), StrategyConfig(), sut, target)
 
         assertTrue("$pkg.Service2" in result.mocks.keys,
             "Service2 (appelé directement) doit rester. Vu: ${result.mocks.keys}")
         assertTrue("$pkg.ResultDTO2" in result.mocks.keys,
             "ResultDTO2 (méthode appelée sur le retour) doit rester. " +
                 "Vu: ${result.mocks.keys}")
-        // ParA / ParB non essentiels et budget=2 → tous deux évincés.
+        // ParA / ParB non essentiels → filtrés par le field-usage filter.
         assertFalse("$pkg.ParA2" in result.mocks.keys)
         assertFalse("$pkg.ParB2" in result.mocks.keys)
     }
@@ -173,8 +133,10 @@ class RecursiveDeepStrategyBugMPTest {
         }
         val sut = fake.resolveClass("$pkg.Ctrl3")!!
         val target = fake.listMethodsOf("$pkg.Ctrl3").single { it.name == "handle" }
-        val tightBudget = StrategyConfig(budget = Budget(maxMockCount = 3))
-        val result = strategy.extractCore(fake, DefaultClassifier(), tightBudget, sut, target)
+        // V1.2 — Budget(maxMockCount=3) supprimé. L'invariant Bug P reste :
+        // SessionModel (type retourné par trivial getter intra-SUT) doit être
+        // surfacé comme mock, indépendamment de tout cap.
+        val result = strategy.extractCore(fake, DefaultClassifier(), StrategyConfig(), sut, target)
 
         // Bug P #1 — le champ hérité userSession entre dans usefulFields via
         // la propagation getter → activeFields.

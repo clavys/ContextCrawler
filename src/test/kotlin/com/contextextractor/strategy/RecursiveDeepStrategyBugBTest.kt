@@ -21,43 +21,13 @@ class RecursiveDeepStrategyBugBTest {
     private val strategy = RecursiveDeepStrategy()
     private val pkg = "com.test.bugb"
 
-    @Test
-    fun `DTO of dropped Autowired field is removed from dataStructures`() {
-        // Setup : SUT a un @Autowired UnusedModele (jamais touché par target).
-        // Avant Bug B fix, UnusedModele apparaissait dans dataStructures.
-        // Après Bug B fix, il est filtré.
-        val fake = fixture {
-            klass("$pkg.UnusedModele") {
-                field("id", T("java.lang.Long"))
-                field("label", T("java.lang.String"))
-                method("<init>", returns = T("$pkg.UnusedModele"))
-            }
-            klass("$pkg.UsedService", isInterface = true) {
-                method("doIt", returns = T("java.lang.String"))
-            }
-            klass("$pkg.Controller") {
-                field("unusedModele", T("$pkg.UnusedModele"),
-                    annotations = listOf("org.springframework.beans.factory.annotation.Autowired"))
-                field("svc", T("$pkg.UsedService"),
-                    annotations = listOf("org.springframework.beans.factory.annotation.Autowired"))
-                method("handle", returns = T("java.lang.String"),
-                    body = "return svc.doIt();") {
-                    reads("$pkg.Controller", "svc")
-                    calls("$pkg.UsedService", "doIt")
-                }
-            }
-        }
-        val sut = fake.resolveClass("$pkg.Controller")!!
-        val target = fake.listMethodsOf("$pkg.Controller").single { it.name == "handle" }
-        val result = strategy.extractCore(fake, DefaultClassifier(), StrategyConfig(), sut, target)
-
-        // UnusedModele ne doit pas figurer parmi les structures de données.
-        assertFalse("$pkg.UnusedModele" in result.dataStructures.keys,
-            "UnusedModele a été dropé via défaut #2 ; son type DTO ne doit pas " +
-                "rester dans dataStructures. Vu: ${result.dataStructures.keys}")
-        // Le champ lui-même est aussi dropé (verrou défaut #2 — sanity check).
-        assertFalse("unusedModele" in result.fields.map { it.name })
-    }
+    // V1.2 — Le test "DTO of dropped Autowired field is removed from dataStructures"
+    // est supprimé : il assertait sur le filtre Bug B V1.1 qui dropait les DTOs
+    // référencés uniquement par un @Autowired non utilisé. V1.2 ne filtre plus
+    // les dataStructures de cette manière — toute classe atteinte dans le graphe
+    // de références est conservée (cf RAPPORT_CONTEXT §9 défaut #3 : on n'évince
+    // jamais un type atteignable). Les 3 autres tests de ce fichier restent
+    // valides : ils vérifient que DTO/paramètre/transitif sont bien conservés.
 
     @Test
     fun `DTO reachable from method parameter is kept`() {

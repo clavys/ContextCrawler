@@ -3,6 +3,9 @@ package com.contextextractor.core.prompt
 import com.contextextractor.core.model.ContextTree
 import com.contextextractor.core.model.MetaKeys
 import com.contextextractor.core.prompt.meta.LayerKind
+import com.contextextractor.core.prompt.constraints.ConstraintsProfile
+import com.contextextractor.core.prompt.constraints.Qwen36b35bProfile
+import com.contextextractor.core.prompt.constraints.resolveConstraintsProfile
 import com.contextextractor.core.prompt.stages.CleanupStage
 import com.contextextractor.core.prompt.stages.ContextRenderStage
 import com.contextextractor.core.prompt.stages.LayerCompositionStage
@@ -83,13 +86,24 @@ class PromptBuilder(private val stages: List<PromptStage>) {
         // LayerComposition → Cleanup. C'est l'ordre exact d'ARCHITECTURE.md §7.
         // Step 6 brachera un override (templates depuis YAML) en passant un
         // `LayerCompositionStage(templates = ...)` custom.
-        fun defaultPipeline(): PromptBuilder = PromptBuilder(
+        //
+        // Phase 5 — overload qui accepte un `ConstraintsProfile`. Le défaut
+        // sans argument utilise [Qwen36b35bProfile] pour préserver le
+        // comportement V1.1 (rétro-compat des tests existants).
+        fun defaultPipeline(): PromptBuilder = defaultPipeline(Qwen36b35bProfile)
+
+        fun defaultPipeline(profile: ConstraintsProfile): PromptBuilder = PromptBuilder(
             listOf(
                 ContextRenderStage(),
                 MetaPromptComposeStage(),
-                LayerCompositionStage(),
+                LayerCompositionStage(LayerCompositionStage.Templates.defaults(profile)),
                 CleanupStage()
             )
         )
+
+        // Helper résolvant un profil depuis une string config — pour
+        // appel depuis l'IDE qui n'a accès qu'à la valeur YAML/Settings.
+        fun defaultPipelineForProfileId(profileId: String?): PromptBuilder =
+            defaultPipeline(resolveConstraintsProfile(profileId))
     }
 }

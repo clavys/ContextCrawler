@@ -46,7 +46,9 @@
       "Bash(xargs grep -h \"<testsuite \")",
       "Bash(awk -F'\"' '{tests+=$2; skipped+=$4; failures+=$6; errors+=$8} END {print \"Total:\", tests, \"Skipped:\", skipped, \"Failures:\", failures, \"Errors:\", errors}')",
       "Bash(awk '{tests+=$1; skipped+=$2; failures+=$3; errors+=$4} END {print \"Total:\", tests, \"Skipped:\", skipped, \"Failures:\", failures, \"Errors:\", errors}')",
-      "Bash(xargs cat)"
+      "Bash(xargs cat)",
+      "Bash(awk '{tests+=$1; skipped+=$2; failures+=$3; errors+=$4} END {print \"Total:\", tests, \"Failures:\", failures, \"Errors:\", errors}')",
+      "Bash(./gradlew compileKotlin compileTestKotlin --console=plain)"
     ]
   }
 }

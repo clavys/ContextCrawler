@@ -30,7 +30,8 @@ class DefaultsConfigSource : ConfigSource {
         "llm" to mapOf(
             "provider" to "claude",
             "model" to "claude-sonnet-4-6",
-            "temperature" to 0.2
+            "temperature" to 0.2,
+            "tuningProfile" to "qwen"
         ),
         "prompt" to mapOf(
             "templates" to emptyMap<String, String>(),
@@ -40,9 +41,6 @@ class DefaultsConfigSource : ConfigSource {
             "maxDepth" to 6,
             "maxInitDepth" to 2,
             "maxGraphDepth" to 4,
-            "maxDtoCount" to 15,
-            "maxMockCount" to 10,
-            "maxInternalLogicCount" to 12,
             "maxEstimatedTokens" to 50_000
         )
     )

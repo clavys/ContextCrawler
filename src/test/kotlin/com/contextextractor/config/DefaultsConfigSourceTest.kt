@@ -46,9 +46,6 @@ class DefaultsConfigSourceTest {
         assertEquals(defaultBudget.maxDepth, budget["maxDepth"])
         assertEquals(defaultBudget.maxInitDepth, budget["maxInitDepth"])
         assertEquals(defaultBudget.maxGraphDepth, budget["maxGraphDepth"])
-        assertEquals(defaultBudget.maxDtoCount, budget["maxDtoCount"])
-        assertEquals(defaultBudget.maxMockCount, budget["maxMockCount"])
-        assertEquals(defaultBudget.maxInternalLogicCount, budget["maxInternalLogicCount"])
         assertEquals(defaultBudget.maxEstimatedTokens, budget["maxEstimatedTokens"])
     }
 
