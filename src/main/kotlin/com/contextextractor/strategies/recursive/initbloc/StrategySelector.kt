@@ -69,7 +69,14 @@ class StrategySelector(
                 params.isEmpty() ->
                     InitStrategy.CALL_PUBLIC_WITH_STUBS(publicDirect.method, externals)
                 else ->
-                    InitStrategy.CALL_PUBLIC_WITH_ARGS(publicDirect.method, params)
+                    // R3-B (Phase 2) — propage paramCallsToStub pour que le
+                    // rendu puisse lister les getters à stuber sur les mocks
+                    // des params (cf cas Astrea 4.1).
+                    InitStrategy.CALL_PUBLIC_WITH_ARGS(
+                        method = publicDirect.method,
+                        args = params,
+                        paramCallsToStub = publicDirect.paramCallsToStub
+                    )
             }
         }
 

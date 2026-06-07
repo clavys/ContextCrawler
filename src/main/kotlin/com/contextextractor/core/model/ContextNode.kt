@@ -46,6 +46,10 @@ object MetaKeys {
     const val INIT_ARGS = "initArgs"                      // 'name:typeFqn' séparés par ', '
     const val INIT_STUBS = "initStubs"                    // 'classFqn#method(args)' séparés par ', '
     const val INIT_SIDE_EFFECTS = "initSideEffects"       // séparées par ', '
+    // R3-B (Phase 2) — getters appelés sur les params de la méthode init
+    // (CALL_PUBLIC_WITH_ARGS). Format : `paramName.methodName():returnType`
+    // séparés par ', '. Le LLM doit les stuber sur les mocks des params.
+    const val INIT_PARAM_CALLS = "initParamCalls"
 
     // Mock : type concret + déclaré + signatures à stubber + flag retour-mock.
     const val MOCK_DECLARED_TYPE = "mockDeclaredType"

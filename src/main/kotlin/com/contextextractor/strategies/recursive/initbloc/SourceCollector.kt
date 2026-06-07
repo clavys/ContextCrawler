@@ -104,7 +104,8 @@ class SourceCollector(
 
         // §4.2 detecteAppelsHorsSUT : appels vers classes hors hiérarchie SUT.
         // Filtre statiques (cohérent avec EntryPointFinder.collectExternalCalls).
-        val externalCalls = introspector.listMethodCalls(m).filter {
+        val allCalls = introspector.listMethodCalls(m)
+        val externalCalls = allCalls.filter {
             !it.isStatic && it.targetType !in hierarchyFqns
         }
 
@@ -116,6 +117,16 @@ class SourceCollector(
             .filter { it != field.name }
             .distinct()
 
+        // R3-B (Phase 2) — Calls whose receiver type matches one of the params.
+        // Heuristique : si `call.targetType` == `param.type.fqName` ET non-statique,
+        // c'est un appel sur ce param. Cas Astrea 4.1 `calculerPremierDernierElementsPage` :
+        // `evenement.getFirst()` → AsCallTarget sur PageEvent (qui est aussi param).
+        // De-dup par méthode signature (un getter appelé 2 fois → 1 stub).
+        val paramTypeFqns = m.parameters.map { it.type.fqName }.toSet()
+        val paramCallsToStub = allCalls
+            .filter { !it.isStatic && it.targetType in paramTypeFqns }
+            .distinctBy { "${it.targetType}#${it.methodName}(${it.argTypes.joinToString(",")})" }
+
         return InitSource.MethodInitializer(
             kind = kind,
             method = m,
@@ -123,7 +134,8 @@ class SourceCollector(
             parametersRequired = m.parameters,
             hasNullGuard = hasNullGuard,
             externalCalls = externalCalls,
-            assignsAlso = assignsAlso
+            assignsAlso = assignsAlso,
+            paramCallsToStub = paramCallsToStub
         )
     }
 

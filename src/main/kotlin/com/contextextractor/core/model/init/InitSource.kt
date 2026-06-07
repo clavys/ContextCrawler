@@ -55,7 +55,13 @@ sealed class InitSource {
         val parametersRequired: List<Parameter>,
         val hasNullGuard: Boolean,
         val externalCalls: List<MethodCall>,
-        val assignsAlso: List<String>
+        val assignsAlso: List<String>,
+        // R3-B (Phase 2) — Calls in the body whose receiver is one of the params
+        // (i.e. `paramName.getter()`). Empty if no params, or params not used.
+        // Quand la stratégie choisie est CALL_PUBLIC_WITH_ARGS, ces calls
+        // documentent les getters que le LLM DOIT stuber sur le mock du param
+        // pour éviter une NPE runtime (cas Astrea 4.1 `calculerPremierDernierElementsPage`).
+        val paramCallsToStub: List<MethodCall> = emptyList()
     ) : InitSource()
 }
 

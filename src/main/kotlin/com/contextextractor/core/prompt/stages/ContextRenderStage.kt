@@ -223,6 +223,17 @@ class ContextRenderStage : PromptStage {
             "CALL_PUBLIC_WITH_ARGS" -> {
                 val method = field.metadata[MetaKeys.INIT_METHOD_NAME].orEmpty()
                 val args = field.metadata[MetaKeys.INIT_ARGS].orEmpty()
+                val paramCalls = field.metadata[MetaKeys.INIT_PARAM_CALLS].orEmpty()
+                // R3-B (Phase 2) — Si le body de l'init method appelle des
+                // getters sur les params, le LLM doit les stuber AVANT l'appel.
+                // Sinon NPE runtime sur mock.getter() qui retourne null par défaut.
+                // Cf cas Astrea 4.1 `calculerPremierDernierElementsPage(PageEvent)`.
+                if (paramCalls.isNotEmpty()) {
+                    sb.appendLine("// Before the call below, stub these getters on the param mock(s):")
+                    paramCalls.split(", ").forEach {
+                        sb.appendLine("//   when($it).thenReturn(...);  // pick a sensible non-null value")
+                    }
+                }
                 sb.appendLine("$sutVarName.$method($args);  // construct per the \"Data structures\" section")
             }
             "CALL_PUBLIC_TRANSITIVE" -> {

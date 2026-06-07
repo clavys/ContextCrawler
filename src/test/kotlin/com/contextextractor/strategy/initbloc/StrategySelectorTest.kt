@@ -230,6 +230,39 @@ class StrategySelectorTest {
         assertEquals(1, (result as InitStrategy.CALL_PUBLIC_WITH_ARGS).args.size)
     }
 
+    @Test
+    fun `R3-B — CALL_PUBLIC_WITH_ARGS forwards paramCallsToStub from MethodInitializer`() {
+        // Astrea case 4.1 — `calculerPremierDernierElementsPage(PageEvent)` lit
+        // `evenement.getFirst()` et `evenement.getRows()` dans son body. Sans le
+        // signal, le LLM mocke PageEvent et NPE au runtime sur ces getters.
+        // Verrou : la stratégie DOIT propager paramCallsToStub pour que le rendu
+        // puisse instruire le LLM.
+        val fake = fixture { klass("com.test.A") { method("calculate") } }
+        val target = aMethod("com.test.A", "calculate")
+        val sel = selectorFor(fake, setOf("com.test.A"), target)
+        val publicInit = aMethod("com.test.A", "calculerPremierDernierElementsPage",
+            visibility = "public",
+            params = listOf(Parameter("evenement", T("org.primefaces.event.data.PageEvent"))))
+        val paramCalls = listOf(
+            MethodCall("org.primefaces.event.data.PageEvent", "getFirst", emptyList(), false),
+            MethodCall("org.primefaces.event.data.PageEvent", "getRows", emptyList(), false)
+        )
+        val sources = listOf(InitSource.MethodInitializer(
+            kind = MethodInitKind.ORDINARY, method = publicInit,
+            visibility = "public",
+            parametersRequired = listOf(Parameter("evenement", T("org.primefaces.event.data.PageEvent"))),
+            hasNullGuard = false, externalCalls = emptyList(), assignsAlso = emptyList(),
+            paramCallsToStub = paramCalls
+        ))
+        val result = sel.choose(aField("premierElementListe", "int"), sources)
+        assertTrue(result is InitStrategy.CALL_PUBLIC_WITH_ARGS)
+        val s = result as InitStrategy.CALL_PUBLIC_WITH_ARGS
+        assertEquals(2, s.paramCallsToStub.size,
+            "paramCallsToStub doit être propagé verbatim depuis MethodInitializer")
+        assertEquals("getFirst", s.paramCallsToStub[0].methodName)
+        assertEquals("getRows", s.paramCallsToStub[1].methodName)
+    }
+
     // -- Branch 7 (3 sorties) ---------------------------------------------------
 
     @Test

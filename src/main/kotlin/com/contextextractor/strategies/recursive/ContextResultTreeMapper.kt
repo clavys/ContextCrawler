@@ -218,6 +218,23 @@ class ContextResultTreeMapper {
                 meta[MetaKeys.INIT_ARGS] = strategy.args.joinToString(", ") {
                     "${it.name}:${it.type.fqName}"
                 }
+                // R3-B (Phase 2) — Rend les appels sur les params au format
+                // `paramName.methodName()` (de-dup par méthode déjà fait en
+                // SourceCollector). Le LLM doit les stuber sur les mocks des
+                // params pour éviter une NPE runtime.
+                if (strategy.paramCallsToStub.isNotEmpty()) {
+                    // Résolution paramTypeFqn → paramName via la liste args.
+                    // En cas de plusieurs params du même type (rare), on prend
+                    // le premier nom — heuristique acceptable, le LLM peut
+                    // toujours ajuster.
+                    val typeToParamName = strategy.args
+                        .associateBy({ it.type.fqName }, { it.name })
+                    meta[MetaKeys.INIT_PARAM_CALLS] = strategy.paramCallsToStub
+                        .joinToString(", ") { call ->
+                            val paramName = typeToParamName[call.targetType] ?: call.targetType
+                            "$paramName.${call.methodName}()"
+                        }
+                }
             }
             is InitStrategy.CALL_PUBLIC_TRANSITIVE -> {
                 meta[MetaKeys.INIT_METHOD_NAME] = strategy.entryPoint.name

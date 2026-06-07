@@ -150,6 +150,49 @@ class ContextRenderStageTest {
             "case91 ne contient aucun ENUM — la ligne Values: ne doit pas apparaître")
     }
 
+    // ── R3-B — CALL_PUBLIC_WITH_ARGS : stub hint sur les params ──────────────
+
+    @Test
+    fun `CALL_PUBLIC_WITH_ARGS renders stub hint when init method calls getters on params`() {
+        // Astrea case 4.1 — `calculerPremierDernierElementsPage(PageEvent)` lit
+        // `evenement.getFirst()` et `evenement.getRows()` dans son body.
+        // Sans le hint, le LLM mocke PageEvent et NPE au runtime.
+        // Verrou : le rendu doit produire 2 lignes "stub these getters".
+        val pkg = "com.test.r3b"
+        val fake = fixture {
+            // Param type — un POJO type avec un getter qui est lu par init method
+            klass("$pkg.Event") {
+                method("getFirst", returns = T("int"))
+                method("getRows", returns = T("int"))
+            }
+            klass("$pkg.SUT") {
+                field("pageStart", T("int"))
+                // Init method publique avec param + lit getters sur param
+                method("computePage",
+                    visibility = "public",
+                    body = "this.pageStart = e.getFirst() + e.getRows();") {
+                    param("e", T("$pkg.Event"))
+                    assigns("$pkg.SUT", "pageStart", rhsExpression = "e.getFirst() + e.getRows()")
+                    calls("$pkg.Event", "getFirst")
+                    calls("$pkg.Event", "getRows")
+                }
+                // Target qui lit le field pour qu'il soit considéré pertinent
+                method("target", returns = T("int"), body = "return pageStart;") {
+                    reads("$pkg.SUT", "pageStart")
+                }
+            }
+        }
+        val output = render(fake, "$pkg.SUT", "target")
+        assertTrue(output.contains("Strategy: CALL_PUBLIC_WITH_ARGS"),
+            "stratégie CALL_PUBLIC_WITH_ARGS attendue")
+        assertTrue(output.contains("Before the call below, stub these getters on the param mock(s):"),
+            "ligne d'invitation à stuber attendue")
+        assertTrue(output.contains("when(e.getFirst()).thenReturn(...)"),
+            "stub hint `e.getFirst()` attendu")
+        assertTrue(output.contains("when(e.getRows()).thenReturn(...)"),
+            "stub hint `e.getRows()` attendu")
+    }
+
     // ── Verrou diagnostic non-testable agrégé ────────────────────────────────
 
     @Test
