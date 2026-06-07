@@ -158,9 +158,24 @@ class DependencyGraphBuilder(
     companion object {
         // Préfixes exclus complètement (pas même le nom, pour limiter la
         // taille du graphe au pertinent). Bypassable via construction custom.
+        //
+        // **Important** : on ne met PAS `javax.` ou `jakarta.` en bloc parce
+        // que `javax.faces.*` / `jakarta.faces.*` doivent rester en tant que
+        // boundaries framework (cf DumpDependencyGraphAction). On liste
+        // chirurgicalement les sous-packages qui sont du bruit pur.
+        //
+        // Élargi V1.3 step 2 cleanup post case 4.1 Astrea : `javax.el.*`,
+        // `javax.enterprise.context.*`, etc. étaient dans le dep-graph et
+        // polluaient le diagnostic sans valeur ajoutée.
         val DEFAULT_SYSTEM_PREFIXES: List<String> = listOf(
-            "java.", "javax.lang.", "javax.annotation.", "javax.inject.",
-            "kotlin.", "scala.", "sun.", "com.sun."
+            "java.",
+            "javax.lang.", "javax.annotation.", "javax.inject.", "javax.el.",
+            "javax.enterprise.", "javax.naming.", "javax.persistence.metamodel.",
+            "jakarta.lang.", "jakarta.annotation.", "jakarta.inject.", "jakarta.el.",
+            "jakarta.enterprise.",
+            "kotlin.", "scala.", "sun.", "com.sun.",
+            "org.apache.commons.lang3.", "org.apache.commons.collections4.",
+            "org.slf4j.", "org.jboss."
         )
 
         private val PRIMITIVE_FQNS: Set<String> = setOf(
