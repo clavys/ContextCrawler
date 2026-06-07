@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.contextcrawler"
-version = "1.3.0"
+version = "1.3.3"
 
 // Set the JVM language level used to build the project.
 kotlin {

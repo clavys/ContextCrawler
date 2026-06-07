@@ -388,6 +388,28 @@ class ReferenceGraphBuilder(
         classFqn: String, methodName: String, argTypeFqns: List<String>
     ): MethodSignature? {
         val cls = introspector.resolveClass(classFqn) ?: return null
+        // 1. Recherche directe dans la classe cible (cas nominal).
+        findMatchingMethod(cls, methodName, argTypeFqns)?.let { return it }
+        // 2. Bug #C bis V1.3 — remontée hiérarchie quand la méthode n'est pas
+        //    visible depuis `classFqn` (cas Astrea typique : `super.getStructurePage()`
+        //    avec `call.targetType = BaseAstreaControleur` mais la méthode définie
+        //    plus haut dans `BaseControleur`). Sans cette remontée, le call est
+        //    silencieusement perdu → LLM hallucine le receiver (cf §10.4 P0).
+        for (superCls in introspector.listSuperClasses(cls)) {
+            findMatchingMethod(superCls, methodName, argTypeFqns)?.let { return it }
+        }
+        // 3. Toujours non-résolue après remontée → null (comportement legacy).
+        //    Le caller `visitMethodBody` saute alors silencieusement le call.
+        //    Si on observe encore Bug #C bis après cette remontée → étape 2bis
+        //    avec fallback synthetic.
+        return null
+    }
+
+    // Helper extrait pour ne pas dupliquer la logique de matching dans
+    // findMethodIn (cas direct) et la remontée hiérarchie (cas Bug #C bis).
+    private fun findMatchingMethod(
+        cls: ClassDescriptor, methodName: String, argTypeFqns: List<String>
+    ): MethodSignature? {
         val candidates = introspector.listMethods(cls).filter { it.name == methodName }
         if (candidates.isEmpty()) return null
         return candidates.firstOrNull { sig ->

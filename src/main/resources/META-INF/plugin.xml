@@ -61,5 +61,20 @@
             <add-to-group group-id="ToolsMenu" anchor="last"/>
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
         </action>
+
+        <!-- V1.3 Étape 1 — outil de debugging.
+             Construit un graphe de dépendances NOM-SEUL depuis la classe au
+             curseur et copie le rendu (résumé + JSON + DOT) au clipboard.
+             Sert à inspecter ce que le pipeline « voit » sur un cas prod
+             bizarre. Indépendant du pipeline principal. -->
+        <action
+            id="com.contextextractor.DumpDependencyGraphAction"
+            class="com.contextextractor.ide.action.DumpDependencyGraphAction"
+            text="Dump Dependency Graph (ContextCrawler)"
+            description="Builds a name-only dependency graph from the SUT under cursor and copies JSON+DOT to clipboard.">
+            <keyboard-shortcut keymap="$default" first-keystroke="alt shift D"/>
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
     </actions>
 </idea-plugin>
