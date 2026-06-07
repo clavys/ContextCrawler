@@ -91,6 +91,13 @@ class ReferenceGraphBuilder(
         // (le returnType de chaque méthode stubée doit être présent).
         propagateStubReturns(ctx)
 
+        // BFS 2bis — Bug #C : détecter les méthodes intra-SUT dont le returnType
+        // est appelé d'instance ailleurs dans le body (= chaînage type
+        // `super.getStructurePage().getNombreMax(...)`). Sans ce détecteur,
+        // le LLM ne sait pas qu'il faut spy+stub la méthode parent pour
+        // injecter la valeur du chaînage → NPE ou ne compile pas.
+        propagateChainedReturnSpy(ctx)
+
         // BFS 3 — pour chaque classe référencée data-shaped (sera vraisemblablement
         // classifiée DATA_STRUCTURE), descendre dans ses champs. Cette propagation
         // est PURE référence — on ne décide pas du pattern (RECORD/BUILDER/etc.)
@@ -239,6 +246,57 @@ class ReferenceGraphBuilder(
                 ctx.register(arg.fqName, UsageSite.AsTypeArgOfReference(type.fqName))
             }
         }
+    }
+
+    // ── Bug #C : intra-SUT method whose returnType is chained-called ─────────
+    //
+    // Cas Astrea 4.1 : `super.getStructurePage().getNombreMax...()`.
+    // Sans signal, le LLM construit IHMDTO en local mais ne sait pas l'injecter
+    // comme retour de `super.getStructurePage()` → coverage incomplète OU NPE.
+    //
+    // Détection : si une méthode intra-SUT visitée retourne un type non-trivial
+    // (non-void, non-primitive, non-system) ET ce type a au moins un
+    // `AsCallTarget` dans le graphe (= chaîné quelque part) → promote la méthode
+    // en `STUB_VIA_SPY` (réutilise le flag isFrameworkBoundary).
+    //
+    // Garde-fou : skip si la méthode assigne des fields SUT (init protocol).
+    // Sinon on remplacerait le body d'un init method par un spy stub, cassant
+    // BLOC 7.
+
+    private fun propagateChainedReturnSpy(ctx: BuildContext) {
+        val snapshot = ctx.snapshot()
+        val updated = ctx.visitedInternalMethods.map { vm ->
+            // Déjà marqué framework boundary → ne pas re-traiter.
+            if (vm.isFrameworkBoundary) return@map vm
+
+            val rtFqn = vm.signature.returnType.fqName
+            // Void / primitives / system → skip.
+            if (rtFqn == "void" || rtFqn in PRIMITIVE_FQNS) return@map vm
+            if (SYSTEM_STATIC_PREFIXES.any { rtFqn.startsWith(it) }) return@map vm
+            // Skip si returnType est dans la hiérarchie SUT (mocker un self
+            // serait surprenant ; cas marginal).
+            if (rtFqn in ctx.hierarchyFqns) return@map vm
+
+            // Safety BLOC 7 : skip si la méthode assigne des fields SUT.
+            // Un init method qui retourne quelque chose n'est pas attendu,
+            // mais on protège quand même.
+            val assignments = runCatching {
+                introspector.listFieldAssignments(vm.signature)
+            }.getOrDefault(emptyList())
+            if (assignments.any { it.ownerType in ctx.hierarchyFqns }) return@map vm
+
+            // Détection : returnType appelé d'instance ailleurs dans le graphe ?
+            val refOnReturn = snapshot[rtFqn] ?: return@map vm
+            if (refOnReturn.isCalledAsInstance) {
+                vm.copy(
+                    isFrameworkBoundary = true,
+                    frameworkPrefixesHit = listOf("return-chained-on-${rtFqn.substringAfterLast('.')}")
+                )
+            } else vm
+        }
+        // Re-emit dans le même ordre.
+        ctx.visitedInternalMethods.clear()
+        ctx.visitedInternalMethods.addAll(updated)
     }
 
     // ── Propagation : returnType des signatures stubées sur les mocks ────────

@@ -408,8 +408,18 @@ class ContextRenderStage : PromptStage {
             // L'ancien `doReturn(/* TODO */)` poussait le LLM à inventer un type
             // (vu en production : `doReturn(pageDataDTO)` sur une méthode qui
             // retourne String → WrongTypeOfReturnValue runtime).
-            // Règle : `doAnswer(invocation -> null)` est sûr pour void et tout
-            // type objet ; pour les primitives on émet une constante typée.
+            //
+            // Bug #C — pour un return type OBJET non-system, `doAnswer(invocation
+            // -> null)` retourne null → chained call sur le mock NPE
+            // (case Astrea 4.1 `super.getStructurePage().getNombreMax(...)`).
+            // On utilise `doReturn(mock(ReturnType.class))` pour les objets
+            // hors système (java./javax./etc.) et hors void.
+            //
+            // Règle :
+            //   - void / inconnu     → doAnswer(invocation -> null) (safe)
+            //   - primitives         → doReturn(0/false/...)
+            //   - objet system       → doAnswer (LLM peut adapter via stub explicite)
+            //   - objet non-system   → doReturn(mock(ShortName.class)) ← Bug #C
             val returnType = m.metadata[MetaKeys.METHOD_RETURN_TYPE].orEmpty()
             val doExpr = when (returnType) {
                 "boolean", "java.lang.Boolean" -> "doReturn(false)"
@@ -417,7 +427,12 @@ class ContextRenderStage : PromptStage {
                 "java.lang.Byte", "java.lang.Short", "java.lang.Integer",
                 "java.lang.Long", "java.lang.Float", "java.lang.Double" -> "doReturn(0)"
                 "char", "java.lang.Character" -> "doReturn('\\u0000')"
-                else -> "doAnswer(invocation -> null)"
+                "", "void" -> "doAnswer(invocation -> null)"
+                else -> {
+                    val isSystem = SYSTEM_PREFIXES_FOR_DO_EXPR.any { returnType.startsWith(it) }
+                    if (isSystem) "doAnswer(invocation -> null)"
+                    else "doReturn(mock(${returnType.substringAfterLast('.')}.class))"
+                }
             }
             sb.appendLine("  $sutVarName = spy($sutVarName);")
             sb.appendLine("  $doExpr.when($sutVarName).$methodName($anyExpr);")
@@ -467,6 +482,14 @@ class ContextRenderStage : PromptStage {
         // `new ClassName(...)` (BLOC 4) ou par Mockito.@InjectMocks.
         private val IMPLICIT_KINDS = setOf(
             "CONSTRUCTOR", "IMPLICIT", "IMPLICIT_VIA_CONSTRUCTOR", "MOCKITO_INJECT_MOCKS"
+        )
+
+        // Bug #C — préfixes "system" pour choisir entre doAnswer (sûr mais
+        // retourne null) et doReturn(mock(...)) (évite NPE sur chained call).
+        // Pour les types JDK/Mockito/etc., doAnswer est OK car le LLM peut
+        // adapter via un stub explicite ailleurs.
+        private val SYSTEM_PREFIXES_FOR_DO_EXPR = listOf(
+            "java.", "javax.", "jakarta.", "kotlin.", "scala.", "sun.", "com.sun."
         )
     }
 }
