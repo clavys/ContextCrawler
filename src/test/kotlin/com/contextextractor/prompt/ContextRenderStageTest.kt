@@ -114,6 +114,42 @@ class ContextRenderStageTest {
             "au moins une piste indentée attendue sous '// Hints:'")
     }
 
+    // ── R3-A — Enum values rendues sous "Values: A, B, C" ──────────────────
+
+    @Test
+    fun `enum DTO renders Values line listing the constants`() {
+        // Astrea case 4.1 R3 : LLM hallucinait `OrdreTriEnum.ASC` parce que
+        // le prompt n'exposait pas les constantes. Verrou : tout DTO classé
+        // ENUM doit afficher `Values: ...` sous son en-tête.
+        val pkg = "com.test.enum_values"
+        val fake = fixture {
+            klass("$pkg.OrdreTri",
+                isEnum = true,
+                enumValues = listOf("ASCENDANT", "DESCENDANT"))
+            klass("$pkg.SUT") {
+                method("trier") {
+                    param("ordre", T("$pkg.OrdreTri"))
+                }
+            }
+        }
+        val output = render(fake, "$pkg.SUT", "trier")
+        assertTrue(output.contains("## $pkg.OrdreTri [ENUM]"),
+            "en-tête ENUM attendu pour le DTO")
+        assertTrue(output.contains("Values: ASCENDANT, DESCENDANT"),
+            "ligne 'Values: ASCENDANT, DESCENDANT' attendue pour court-circuiter " +
+                "l'hallucination par le LLM (Astrea R3-A)")
+    }
+
+    @Test
+    fun `non-enum DTO does NOT render Values line`() {
+        // Garde-fou : la ligne Values ne doit apparaître que pour ENUM,
+        // jamais pour SETTER_BASED / CONSTRUCTOR / RECORD / etc.
+        val output = render(Fixtures.case91(),
+            "com.testproject.case91.OrderService", "calculate")
+        assertFalse(output.contains("Values:"),
+            "case91 ne contient aucun ENUM — la ligne Values: ne doit pas apparaître")
+    }
+
     // ── Verrou diagnostic non-testable agrégé ────────────────────────────────
 
     @Test

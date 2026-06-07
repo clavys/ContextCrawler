@@ -369,6 +369,12 @@ class ContextResultTreeMapper {
                             "${it.name}:${it.type.fqName}"
                         })
                     }
+                    // R3-A — expose enum values pour éviter l'hallucination de
+                    // constantes inexistantes par le LLM (Astrea case 4.1 a vu
+                    // `OrdreTriEnum.ASC` halluciné). Présent uniquement pour ENUM.
+                    if (dto.enumValues.isNotEmpty()) {
+                        put(MetaKeys.DTO_ENUM_VALUES, dto.enumValues.joinToString(", "))
+                    }
                 }
             )
         }

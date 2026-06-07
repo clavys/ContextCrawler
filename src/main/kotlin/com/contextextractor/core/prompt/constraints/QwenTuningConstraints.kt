@@ -18,7 +18,17 @@ package com.contextextractor.core.prompt.constraints
 // `new ElementXxx()` pour peupler un `List<ElementXxx>` retourné par un mock,
 // mais `ElementXxx` n'a pas de no-args ctor → NoSuchMethodError.
 //
-// **Pourquoi un fichier séparé** : ces 4 sections font ~70 lignes de prompt.
+// **Bug EE** — Sorting/comparing on mocks. Si le code interne fait
+// `list.sort(Comparator.comparing(X::getKey))` sur une liste de mocks, le
+// comparator appelle `getKey()` qui retourne null sur un mock par défaut → NPE
+// runtime. Qwen oublie de stuber le getter de clé.
+//
+// **Bug FF** — UnnecessaryStubbingException (Mockito 4.x strict). Qwen stube
+// des mocks dont la voie d'exécution évite l'usage (typique : ajouter un
+// élément à la liste puis le retirer avant le tri). Mockito strict rejette
+// les stubs orphelins en @AfterEach.
+//
+// **Pourquoi un fichier séparé** : ces 6 sections font ~110 lignes de prompt.
 // Pour un LLM puissant qui ne fait pas ces erreurs (Claude Opus, GPT-4),
 // les inclure noierait les règles structurelles et gaspillerait des tokens.
 // Le profile [Qwen36b35bProfile] les inclut par défaut, [NoTuningProfile]
@@ -58,6 +68,20 @@ object QwenTuningConstraints {
             when(mock.getCriteres()).thenReturn(Collections.emptyMap());
           EXAMPLE valid:
             when(mock.getCriteres()).thenReturn(Collections.<String, CritereDTO>emptyMap());
+        - **CRITICAL — Copy the EXACT type arguments shown in the method signature.**
+          NEVER substitute with `Object` or a related-but-different type. The
+          type-witness must MATCH the declared return type of the stubbed method.
+          Locate the `Methods to stub on` line in CONTEXT and copy the generic
+          arguments character-by-character.
+          EXAMPLE — CONTEXT shows:
+            tableauSupervisionDeltaVecModele.getCriteresRecherche():java.util.Map<java.lang.String,fr.gouv.justice.astrea.fwk.transverse.dto.CritereDTO>
+          EXAMPLE invalid (compile error: thenReturn cannot match `Map<String, Object>`
+          against expected `Map<String, CritereDTO>`):
+            Map<String, Object> criteresRecherche = Collections.<String, Object>emptyMap();
+            when(tableauSupervisionDeltaVecModele.getCriteresRecherche()).thenReturn(criteresRecherche);
+          EXAMPLE valid (type witness matches CritereDTO exactly):
+            Map<String, CritereDTO> criteresRecherche = Collections.<String, CritereDTO>emptyMap();
+            when(tableauSupervisionDeltaVecModele.getCriteresRecherche()).thenReturn(criteresRecherche);
 
         # Verifying calls that receive in-body `new` instances (Bug AA)
         - When the target body creates an object via `new Type()` and passes
@@ -99,5 +123,58 @@ object QwenTuningConstraints {
         - If you just need a non-empty list/map to satisfy a `hasSize(N)`
           or `isNotEmpty()` assertion, prefer `mock(T.class)` over `new T()`
           for every element.
+
+        # Sorting/comparing on mocks (Bug EE)
+        - When the target body (or an internal sub-method) calls `sort(...)`,
+          `Comparator.comparing(...)`, `min(...)`, `max(...)`, or any operation
+          that EXTRACTS a key from each element to compare them, you MUST stub
+          the key-getter on every mock instance you put in the list. Otherwise
+          the getter returns `null` (Mockito default for object returns), and
+          the comparator throws NPE at runtime.
+        - Check the body of any "Internal sub-methods" listed in CONTEXT for
+          patterns like `list.sort(Comparator.comparing(X::getY))` — if you
+          find one, every `mock(X.class)` used as element MUST have `getY()`
+          stubbed with a unique non-null value.
+          EXAMPLE invalid (runtime NPE — comparator gets null key):
+            ElementsListeDeroulante elementUn = mock(ElementsListeDeroulante.class);
+            ElementsListeDeroulante elementDeux = mock(ElementsListeDeroulante.class);
+            List<ElementsListeDeroulante> liste = List.of(elementUn, elementDeux);
+            when(supervisionDeltaVecModele.getListeTypeMessage()).thenReturn(liste);
+            sut.rechercherTypeMessage("x");
+            // SUT calls liste.sort(Comparator.comparing(::getCleAssociee)) → NPE
+          EXAMPLE valid:
+            when(elementUn.getCleAssociee()).thenReturn("A");
+            when(elementDeux.getCleAssociee()).thenReturn("B");
+            // Now the sort returns ordered list without NPE.
+        - This rule also applies to `equals(...)`/`hashCode(...)` comparisons in
+          Sets/Maps : if you put mocks into a HashSet/HashMap, stub the relevant
+          properties or risk identity-only comparison.
+
+        # Avoid unnecessary stubbings (Bug FF — Mockito strict)
+        - Mockito 4.x with `@ExtendWith(MockitoExtension.class)` runs in STRICT
+          mode by default. A stub that the SUT never invokes during the test
+          path throws `UnnecessaryStubbingException` in @AfterEach.
+        - Before writing `when(mock.method()).thenReturn(...)`, trace the target
+          body line-by-line: does this stub actually get called given the inputs
+          you provide? If not, REMOVE the stub.
+        - Common pitfall : when the SUT removes/replaces an element before
+          processing the list, the removed element's stubbed getters are never
+          touched → unnecessary.
+          EXAMPLE — `trierListeDeroulanteParCode` sorts the list AFTER `remove(0)`:
+            ElementsListeDeroulante elementVide = mock(ElementsListeDeroulante.class);
+            ElementsListeDeroulante elementUn = mock(ElementsListeDeroulante.class);
+            ElementsListeDeroulante elementDeux = mock(ElementsListeDeroulante.class);
+            // `elementVide` est retiré AVANT le sort → son getCleAssociee()
+            // ne sera JAMAIS appelé → stub inutile :
+            when(elementVide.getCleAssociee()).thenReturn("VIDE");  // ← REMOVE
+            when(elementUn.getCleAssociee()).thenReturn("ZZZ");      // ← OK (utilisé par sort)
+            when(elementDeux.getCleAssociee()).thenReturn("AAA");    // ← OK (utilisé par sort)
+        - If you cannot tell whether a stub will be consumed (defensive setup),
+          wrap the relevant stubs with `lenient()` :
+            lenient().when(elementVide.getCleAssociee()).thenReturn("VIDE");
+          But prefer removal — `lenient()` masks real test gaps.
+        - **NEVER add `@MockitoSettings(strictness = Strictness.LENIENT)` on
+          the class** to silence ALL unnecessary stubbings globally. That hides
+          legitimate test smells.
     """.trimIndent()
 }

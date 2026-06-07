@@ -413,6 +413,11 @@ class ContextRenderStage : PromptStage {
             sb.appendLine("## ${dto.title} [$pattern]")
             val fields = dto.metadata[MetaKeys.DTO_FIELDS].orEmpty()
             if (fields.isNotEmpty()) sb.appendLine("Fields: $fields")
+            // R3-A — affiche les constantes ENUM disponibles. Sans ça, le LLM
+            // hallucine (ex Astrea case 4.1 : `OrdreTriEnum.ASC` au lieu de
+            // `ASCENDANT`). N'est rendu que pour les nœuds de pattern ENUM.
+            val enumValues = dto.metadata[MetaKeys.DTO_ENUM_VALUES].orEmpty()
+            if (enumValues.isNotEmpty()) sb.appendLine("Values: $enumValues")
         }
         sb.appendLine()
     }

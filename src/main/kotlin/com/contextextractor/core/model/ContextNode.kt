@@ -56,6 +56,11 @@ object MetaKeys {
     // DTO : pattern + champs + builder/factory si applicable.
     const val DTO_PATTERN = "dtoPattern"
     const val DTO_FIELDS = "dtoFields"                    // 'name:typeFqn' séparés par ', '
+    // ENUM : valeurs énumérées disponibles (Round R3-A — Astrea Bug R3-A).
+    // Sans cette liste, le LLM hallucine des constantes (ex: `OrdreTriEnum.ASC`
+    // alors que l'enum a en réalité `ASCENDANT`). Présent uniquement sur les
+    // nœuds DATA_STRUCTURE de pattern ENUM.
+    const val DTO_ENUM_VALUES = "dtoEnumValues"           // 'A, B, C' séparés par ', '
 
     // Méthode cible / interne : signature complète canonique.
     const val METHOD_CANONICAL = "methodCanonical"

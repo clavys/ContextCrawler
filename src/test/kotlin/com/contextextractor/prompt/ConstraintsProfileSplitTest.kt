@@ -34,7 +34,7 @@ class ConstraintsProfileSplitTest {
     }
 
     @Test
-    fun `Qwen profile includes Y Z AA DD tuning sections`() {
+    fun `Qwen profile includes Y Z AA DD EE FF tuning sections`() {
         val out = buildPrompt(PromptBuilder.defaultPipeline(Qwen36b35bProfile))
         assertTrue(out.contains("# Checked exceptions on test methods (Bug Y)"),
             "Qwen profile : section Bug Y attendue")
@@ -44,10 +44,14 @@ class ConstraintsProfileSplitTest {
             "Qwen profile : section Bug AA attendue")
         assertTrue(out.contains("# Building instances for stub return values (Bug DD)"),
             "Qwen profile : section Bug DD attendue")
+        assertTrue(out.contains("# Sorting/comparing on mocks (Bug EE)"),
+            "Qwen profile : section Bug EE (Astrea R3-C) attendue")
+        assertTrue(out.contains("# Avoid unnecessary stubbings (Bug FF — Mockito strict)"),
+            "Qwen profile : section Bug FF (Astrea R4-NEW-2) attendue")
     }
 
     @Test
-    fun `NoTuning profile omits Y Z AA DD tuning sections`() {
+    fun `NoTuning profile omits Y Z AA DD EE FF tuning sections`() {
         val out = buildPrompt(PromptBuilder.defaultPipeline(NoTuningProfile))
         assertFalse(out.contains("# Checked exceptions on test methods (Bug Y)"),
             "NoTuning profile : Bug Y NE doit PAS être présent")
@@ -57,6 +61,10 @@ class ConstraintsProfileSplitTest {
             "NoTuning profile : Bug AA NE doit PAS être présent")
         assertFalse(out.contains("# Building instances for stub return values (Bug DD)"),
             "NoTuning profile : Bug DD NE doit PAS être présent")
+        assertFalse(out.contains("# Sorting/comparing on mocks (Bug EE)"),
+            "NoTuning profile : Bug EE NE doit PAS être présent")
+        assertFalse(out.contains("# Avoid unnecessary stubbings (Bug FF — Mockito strict)"),
+            "NoTuning profile : Bug FF NE doit PAS être présent")
     }
 
     @Test
@@ -78,11 +86,12 @@ class ConstraintsProfileSplitTest {
     @Test
     fun `default pipeline preserves Qwen behavior for V1_1 backward compat`() {
         // Verrou pivot : `defaultPipeline()` sans argument DOIT continuer à
-        // produire les patches Y/Z/AA/DD (les tests existants en dépendent).
+        // produire les patches Y/Z/AA/DD/EE/FF (les tests existants en dépendent).
         val out = buildPrompt(PromptBuilder.defaultPipeline())
         assertTrue(out.contains("(Bug Y)") && out.contains("(Bug Z)") &&
-            out.contains("(Bug AA)") && out.contains("(Bug DD)"),
-            "defaultPipeline() défaut = Qwen, doit garder Bug Y/Z/AA/DD")
+            out.contains("(Bug AA)") && out.contains("(Bug DD)") &&
+            out.contains("(Bug EE)") && out.contains("(Bug FF"),
+            "defaultPipeline() défaut = Qwen, doit garder Bug Y/Z/AA/DD/EE/FF")
     }
 
     @Test
@@ -106,15 +115,19 @@ class ConstraintsProfileSplitTest {
         assertFalse(BaseConstraints.TEXT.contains("(Bug Z)"))
         assertFalse(BaseConstraints.TEXT.contains("(Bug AA)"))
         assertFalse(BaseConstraints.TEXT.contains("(Bug DD)"))
+        assertFalse(BaseConstraints.TEXT.contains("(Bug EE)"))
+        assertFalse(BaseConstraints.TEXT.contains("(Bug FF"))
     }
 
     @Test
-    fun `QwenTuningConstraints only contains the 4 expected sections`() {
+    fun `QwenTuningConstraints only contains the 6 expected sections`() {
         val text = QwenTuningConstraints.TEXT
         assertTrue(text.contains("(Bug Y)"))
         assertTrue(text.contains("(Bug Z)"))
         assertTrue(text.contains("(Bug AA)"))
         assertTrue(text.contains("(Bug DD)"))
+        assertTrue(text.contains("(Bug EE)"))
+        assertTrue(text.contains("(Bug FF"))
         // Garde-fou : pas de pollution avec des règles universelles
         // (le test échoue si quelqu'un déplace par erreur du contenu Base).
         assertFalse(text.contains("# Critical rules"))
