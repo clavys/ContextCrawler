@@ -235,6 +235,11 @@ class ContextResultTreeMapper {
                             "$paramName.${call.methodName}()"
                         }
                 }
+                // R3-B (Phase 2 bis, option c) — Body de la méthode d'init.
+                // Présent uniquement si non vide (PSI peut échouer à lire).
+                if (strategy.methodBody.isNotBlank()) {
+                    meta[MetaKeys.INIT_METHOD_BODY] = strategy.methodBody
+                }
             }
             is InitStrategy.CALL_PUBLIC_TRANSITIVE -> {
                 meta[MetaKeys.INIT_METHOD_NAME] = strategy.entryPoint.name

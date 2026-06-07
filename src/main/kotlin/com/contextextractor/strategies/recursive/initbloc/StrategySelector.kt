@@ -69,13 +69,17 @@ class StrategySelector(
                 params.isEmpty() ->
                     InitStrategy.CALL_PUBLIC_WITH_STUBS(publicDirect.method, externals)
                 else ->
-                    // R3-B (Phase 2) — propage paramCallsToStub pour que le
-                    // rendu puisse lister les getters à stuber sur les mocks
-                    // des params (cf cas Astrea 4.1).
+                    // R3-B (Phase 2 + Phase 2 bis) — propage paramCallsToStub
+                    // ET le source body. L'option (c) du body est la solution
+                    // robuste : le LLM lit le code et identifie les stubs
+                    // requis, même avec héritage / call chains.
                     InitStrategy.CALL_PUBLIC_WITH_ARGS(
                         method = publicDirect.method,
                         args = params,
-                        paramCallsToStub = publicDirect.paramCallsToStub
+                        paramCallsToStub = publicDirect.paramCallsToStub,
+                        methodBody = runCatching {
+                            introspector.readMethodBody(publicDirect.method)
+                        }.getOrDefault("")
                     )
             }
         }

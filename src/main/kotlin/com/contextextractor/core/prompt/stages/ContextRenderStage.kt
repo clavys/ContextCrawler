@@ -224,14 +224,27 @@ class ContextRenderStage : PromptStage {
                 val method = field.metadata[MetaKeys.INIT_METHOD_NAME].orEmpty()
                 val args = field.metadata[MetaKeys.INIT_ARGS].orEmpty()
                 val paramCalls = field.metadata[MetaKeys.INIT_PARAM_CALLS].orEmpty()
-                // R3-B (Phase 2) — Si le body de l'init method appelle des
-                // getters sur les params, le LLM doit les stuber AVANT l'appel.
-                // Sinon NPE runtime sur mock.getter() qui retourne null par défaut.
-                // Cf cas Astrea 4.1 `calculerPremierDernierElementsPage(PageEvent)`.
+                val methodBody = field.metadata[MetaKeys.INIT_METHOD_BODY].orEmpty()
+                // R3-B (Phase 2 bis, option c) — Rendre le source body de la
+                // méthode d'init dans un bloc markdown ```java (cohérent avec
+                // `# Internal sub-methods`). Le LLM lit le code et identifie
+                // tout seul les getters à stuber sur les mocks des params.
+                // Plus robuste que l'heuristique paramCallsToStub (PSI peine
+                // sur l'héritage). N.B. les ``` ne sont pas des commentaires
+                // Java au sens R2 — c'est un délimiteur de bloc dans le prompt.
+                if (methodBody.isNotBlank()) {
+                    sb.appendLine("Source body of `$method` (stub any getters called on the param mock(s) BEFORE the call below):")
+                    sb.appendLine("```java")
+                    sb.appendLine(methodBody.trim())
+                    sb.appendLine("```")
+                }
+                // R3-B (Phase 2) — Heuristique paramCallsToStub : conserve le
+                // signal si fonctionne (cas simples sans héritage PSI fragile).
+                // Rendu en texte simple, pas en commentaire Java.
                 if (paramCalls.isNotEmpty()) {
-                    sb.appendLine("// Before the call below, stub these getters on the param mock(s):")
+                    sb.appendLine("Detected getters on param mock(s) (may be incomplete — check body above):")
                     paramCalls.split(", ").forEach {
-                        sb.appendLine("//   when($it).thenReturn(...);  // pick a sensible non-null value")
+                        sb.appendLine("  - when($it).thenReturn(...)  // pick a sensible non-null value")
                     }
                 }
                 sb.appendLine("$sutVarName.$method($args);  // construct per the \"Data structures\" section")

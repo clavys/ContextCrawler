@@ -185,12 +185,18 @@ class ContextRenderStageTest {
         val output = render(fake, "$pkg.SUT", "target")
         assertTrue(output.contains("Strategy: CALL_PUBLIC_WITH_ARGS"),
             "stratégie CALL_PUBLIC_WITH_ARGS attendue")
-        assertTrue(output.contains("Before the call below, stub these getters on the param mock(s):"),
-            "ligne d'invitation à stuber attendue")
-        assertTrue(output.contains("when(e.getFirst()).thenReturn(...)"),
-            "stub hint `e.getFirst()` attendu")
-        assertTrue(output.contains("when(e.getRows()).thenReturn(...)"),
-            "stub hint `e.getRows()` attendu")
+        // R3-B Phase 2 bis (option c) — Rend le source body de la méthode d'init.
+        // Le LLM lit le body et identifie tout seul les getters à stuber.
+        assertTrue(output.contains("Source body of `computePage`"),
+            "ligne d'invitation à lire le source body attendue (Phase 2 bis)")
+        assertTrue(output.contains("e.getFirst()") && output.contains("e.getRows()"),
+            "source body doit contenir `e.getFirst()` et `e.getRows()`")
+        // R3-B Phase 2 — Si paramCallsToStub a matché, la heuristique
+        // produit aussi des "Detected getters". Ce verrou ne fire que dans
+        // les cas simples (pas d'héritage PSI).
+        assertTrue(output.contains("Detected getters on param mock(s)") ||
+                   output.contains("when(e.getFirst()).thenReturn"),
+            "heuristique paramCallsToStub doit produire un signal complémentaire")
     }
 
     // ── Verrou diagnostic non-testable agrégé ────────────────────────────────

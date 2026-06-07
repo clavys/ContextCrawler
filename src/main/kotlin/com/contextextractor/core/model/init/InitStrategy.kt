@@ -51,15 +51,19 @@ sealed class InitStrategy {
 
     // 6c — Méthode publique avec arguments à fournir.
     //
-    // R3-B (Phase 2) — `paramCallsToStub` documente les getters appelés DANS le
-    // body de cette méthode SUR les params. Le LLM doit les stuber sur les
-    // mocks des params (sinon NPE runtime — cas Astrea 4.1
-    // `calculerPremierDernierElementsPage(PageEvent)` qui lit
-    // `evenement.getFirst()` et `evenement.getRows()`).
+    // R3-B (Phase 2) — `paramCallsToStub` : heuristique fragile (PSI résout
+    // les calls hérités vers la classe parente — case Astrea PageEvent →
+    // AjaxBehaviorEvent → JSF, perd le matching). Conservé pour les cas
+    // simples où ça marche.
+    //
+    // R3-B (Phase 2 bis, option c) — `methodBody` : source body de la méthode
+    // d'init. Le LLM lit le code et identifie tout seul les getters à stuber,
+    // sans heuristique. Robuste à l'héritage et aux appels chaînés.
     data class CALL_PUBLIC_WITH_ARGS(
         val method: MethodSignature,
         val args: List<Parameter>,
-        val paramCallsToStub: List<MethodCall> = emptyList()
+        val paramCallsToStub: List<MethodCall> = emptyList(),
+        val methodBody: String = ""
     ) : InitStrategy()
 
     // 7c — Point d'entrée transitif trouvé via BFS sur le graphe inverse.

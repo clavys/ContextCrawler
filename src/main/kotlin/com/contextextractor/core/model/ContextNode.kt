@@ -50,6 +50,10 @@ object MetaKeys {
     // (CALL_PUBLIC_WITH_ARGS). Format : `paramName.methodName():returnType`
     // séparés par ', '. Le LLM doit les stuber sur les mocks des params.
     const val INIT_PARAM_CALLS = "initParamCalls"
+    // R3-B (Phase 2 bis, option c) — source body de la méthode init pour
+    // CALL_PUBLIC_WITH_ARGS. Le LLM lit le body et identifie tout seul les
+    // getters à stuber (plus robuste que l'heuristique paramCallsToStub).
+    const val INIT_METHOD_BODY = "initMethodBody"
 
     // Mock : type concret + déclaré + signatures à stubber + flag retour-mock.
     const val MOCK_DECLARED_TYPE = "mockDeclaredType"
