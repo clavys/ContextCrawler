@@ -30,7 +30,7 @@ import com.contextextractor.core.model.refs.ClassReference
 //     → Le builder en Phase 1 utilise le même scan (héritage tactique).
 //        Mais le résultat alimente naturellement `AsFieldOfSut`.
 //
-// **Ordre des règles** :
+// **Ordre des règles V1.2 — révisé Astrea R1 (Bug #A + R3-2)** :
 //   1. Système (java.*, primitifs)              → SYSTEM_IGNORE
 //   2. Framework (préfixe configuré)             → SYSTEM_IGNORE
 //   3. Container (Optional, Future, Mono...)     → CONTAINER
@@ -38,13 +38,28 @@ import com.contextextractor.core.model.refs.ClassReference
 //   5. SAM java.util.function.*                  → FUNCTIONAL_LAMBDA
 //   6. Hiérarchie SUT                            → INTERNAL_LOGIC (root = SUT_BOOTSTRAP géré par caller)
 //   7. Appelé comme STATIC uniquement            → STATIC_UTILITY
-//   8. Appelé comme INSTANCE                     → MOCK_EXTERNAL  ← le big winner
+//   7bis. Instancié dans le body (new Type)      → DATA_STRUCTURE (force)
+//        ← déplacé AVANT R8 pour fix Astrea R3-2 (case 4.3 ReferenceModele) :
+//        un type créé via `new X()` dans target body ne PEUT PAS être mocké,
+//        même s'il porte un setter appelé après — l'instance utilisée est
+//        celle locale, pas le mock injecté.
+//   8. Appelé comme INSTANCE (mutator OR SUT field) → MOCK_EXTERNAL
+//        ← extension `|| ref.isSutField` pour fix Astrea R1-1/R2-1 :
+//        un field injecté DOIT être mockable même si on n'en lit que des
+//        pur-getters (sinon NPE runtime du test).
 //   9. ENUM / SEALED / RECORD                    → DATA_STRUCTURE
 //   10. Lombok @Data/@Value/@Builder             → DATA_STRUCTURE
-//   11. Toutes méthodes triviales (rule 10 V1.1) → DATA_STRUCTURE
-//   12. Instancié dans le body (new Type)        → DATA_STRUCTURE (force)
-//   13. Interface / abstract                     → MOCK_EXTERNAL
-//   14. Spring @Service/@Repository/etc.         → MOCK_EXTERNAL
+//   11. (vide — ancien isInstantiatedInBody, déplacé en R7bis)
+//   11bis. Stub return EXCLUSIF (pas d'autre usage) → MOCK_EXTERNAL
+//        ← fix Astrea R3-1 (case 4.3 PageDataDTO) : un type utilisé seulement
+//        comme return value d'un stub mock doit être mockable (le LLM ne
+//        peut pas `new` un `[CONSTRUCTOR]` sans connaître ses args).
+//        Position : après R9/R10 (ENUM/Lombok restent prioritaires) mais
+//        avant R12-R14 (PageDataDTO POJO concret tomberait sinon dans R14
+//        all-trivial-methods → DATA_STRUCTURE).
+//   12. Interface / abstract                     → MOCK_EXTERNAL
+//   13. Spring @Service/@Repository/etc.         → MOCK_EXTERNAL
+//   14. Toutes méthodes triviales (rule 10 V1.1) → DATA_STRUCTURE
 //   15. Sur la surface de target (param/return)  → MOCK_EXTERNAL (par sécurité)
 //   16. Default                                  → DATA_STRUCTURE (changement V1.2 !
 //                                                    V1.1 = MOCK_EXTERNAL par défaut)
@@ -91,27 +106,41 @@ class DefaultContextAwareClassifier : ContextAwareClassifier {
             return ExtractionMode.STATIC_UTILITY
         }
 
-        // Règle 8 — appel d'instance MUTATEUR ou BUSINESS → MOCK_EXTERNAL.
+        // Règle 7bis — `new Type()` détecté dans le body → DTO forcé.
         //
-        // Affinage post-tests V1.2 : déclencher MOCK uniquement si au moins un
+        // Astrea R3-2 (case 4.3) : `new ReferenceModele() + setReference()` ;
+        // R8 V1.1 promouvait en MOCK (setter = mutator) alors que l'instance
+        // utilisée par le code de prod est celle locale, jamais le mock.
+        // L'instanciation est un signal STRUCTUREL plus fort qu'un call ;
+        // elle doit primer sur les règles d'usage.
+        //
+        // Aussi prioritaire sur "interface" (anciennement R12) : un
+        // `new SomeIface() {...}` anonyme ne peut PAS devenir @Mock — le
+        // code de prod construit l'instance.
+        if (ref.isInstantiatedInBody) return ExtractionMode.DATA_STRUCTURE
+
+        // Règle 8 — appel d'instance MUTATEUR/BUSINESS, ou field of SUT → MOCK_EXTERNAL.
+        //
+        // Affinage post-tests V1.2 : déclencher MOCK si au moins un
         // call site est :
         //   • un appel avec arguments (typiquement setter `setX(value)`,
         //     méthode business `doSomething(arg)`), OU
-        //   • une méthode dont le nom n'est PAS un pur accesseur
-        //     (= NE commence PAS par `get` / `is` / `equals` / `hashCode` / `toString`).
+        //   • une méthode dont le nom n'est PAS un pur accesseur, OU
+        //   • le type est un FIELD INJECTÉ DE LA SUT (Astrea R1-1/R2-1 :
+        //     un champ @Autowired/@Inject DOIT être mockable même si on
+        //     n'en lit que des getters purs, sinon NPE runtime du test).
         //
-        // Si TOUS les appels sont des getters purs (no-arg, get*/is*), la
-        // sémantique est « lecture pure de données » → DTO préférable :
-        // le test construit une instance avec les valeurs voulues et le SUT
-        // y accède naturellement. Cas concret case00 (OrderEntity.getId(),
-        // getReference(), getAmount()) ou case92 (OrderRequest.getId(),
-        // getReference()) — V1.1 les classait DTO via rule 10, V1.2 les
-        // ramène au même résultat sans patch.
+        // Si TOUS les appels sont des pur getters ET le type n'est pas
+        // un field of SUT, la sémantique est « lecture pure de données » →
+        // DTO préférable : le test construit une instance avec les valeurs
+        // voulues et le SUT y accède naturellement. Cas concret case00
+        // (OrderEntity.getId() retourné par repo) — non-régression validée
+        // par AstreaRoundR1RegressionTest.
         //
         // Bug U préservé : `modele.setX(true)` a 1 arg → MOCK. ✓
         // Bug DD préservé : les services concernés sont interfaces ou Spring
-        // → rule 13/14 les attrape AVANT rule 16 même si rule 8 ne fire pas.
-        if (ref.isCalledAsInstance && hasMutatorOrBusinessCall(ref)) {
+        // → rule 12/13 les attrape même si rule 8 ne fire pas.
+        if (ref.isCalledAsInstance && (hasMutatorOrBusinessCall(ref) || ref.isSutField)) {
             return ExtractionMode.MOCK_EXTERNAL
         }
 
@@ -136,11 +165,46 @@ class DefaultContextAwareClassifier : ContextAwareClassifier {
             }
         }
 
-        // Règle 11 — `new Type()` détecté dans le body → DTO forcé.
-        // Priorité sur "interface" car `new SomeIface() {...}` (anonyme) ne
-        // peut PAS être remplacé par un @Mock — le code de prod construit
-        // l'instance, le test doit la matérialiser.
-        if (ref.isInstantiatedInBody) return ExtractionMode.DATA_STRUCTURE
+        // Règle 11 — vide (anciennement `isInstantiatedInBody`, déplacé en R7bis
+        // pour fix Astrea R3-2). Conservé comme repère numérique.
+
+        // Règle 11bis — stub return EXCLUSIF + AUCUN ctor public no-arg → MOCK_EXTERNAL.
+        //
+        // Astrea R3-1 (case 4.3) : `PageDataDTO` est le retour de
+        // `sessionAstreaModele.getPageData(NavigationEnum)`. Son seul usage agrégé
+        // est `AsStubReturn` — il n'est ni field SUT, ni instancié, ni appelé,
+        // ni sur la surface du target. ET il N'A PAS de ctor public no-arg.
+        //
+        // V1.1/R1 le classait DATA_STRUCTURE via R14 (toutes méthodes triviales)
+        // → le LLM tentait `new PageDataDTO()` pour produire la return-value
+        // du stub → no-arg ctor inexistant → ne compile pas.
+        //
+        // V1.2/R2-B : on classe MOCK_EXTERNAL. Le LLM déclare `@Mock PageDataDTO`
+        // et l'utilise dans `when(...).thenReturn(pageDataDTO)`. Le mock est
+        // valide pour tout type concret (même sans ctor public no-arg).
+        //
+        // Position après R9 (ENUM) et R10 (Lombok) — ces patterns DTO restent
+        // prioritaires.
+        //
+        // **Distinction avec Bug DD natif** : un POJO avec ctor no-arg
+        // (visible dans `descriptorMethods`) RESTE DATA_STRUCTURE — le LLM peut
+        // construire via `new Foo()` ou via Lombok `Foo.builder()`. La règle
+        // ne fire QUE quand on a la preuve qu'aucun no-arg ctor n'existe :
+        // `descriptorMethods` est non-vide ET ne contient pas `<init>()` no-arg.
+        // Cas `descriptorMethods` vide (pas d'info) → fall-through pour
+        // préserver le comportement legacy (test "Bug DD natif").
+        //
+        // Garde-fou : NE PAS fire si déjà géré (instancié dans body, surface
+        // target, field SUT, appelé). Ces cas ont une sémantique plus forte.
+        if (ref.isStubReturnType &&
+            !ref.isInstantiatedInBody &&
+            !ref.isSutField &&
+            !ref.isCalledAsInstance &&
+            !ref.isOnTargetSurface &&
+            descriptorMethods.isNotEmpty() &&
+            descriptorMethods.none { it.name == "<init>" && it.parameters.isEmpty() }) {
+            return ExtractionMode.MOCK_EXTERNAL
+        }
 
         if (descriptor != null) {
             // Règle 12 — interface ou abstract → MOCK_EXTERNAL.

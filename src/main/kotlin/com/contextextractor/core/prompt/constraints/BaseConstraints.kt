@@ -40,7 +40,20 @@ object BaseConstraints {
                Search for `public` on the class line and on every test method — remove all.
         - [R4] NO `new TypeName(...)` for any type listed under `# Mocks` in CONTEXT.
                Search every `new ` and verify the type is NOT in `# Mocks`.
-               If it is, replace with `@Mock TypeName typeName;` (see Hard prohibitions).
+               If it is, declare it as `@Mock TypeName typeName;` (see Hard prohibitions).
+        - [R5] When `# Class under test instantiation` shows `@InjectMocks` on the SUT
+               field, you MUST replicate it VERBATIM on the SUT declaration in the test
+               class. Add `import org.mockito.InjectMocks;` to the imports.
+               NEVER instantiate the SUT manually via `sut = new SutClass(...)` in
+               @BeforeEach — `@InjectMocks` + `@ExtendWith(MockitoExtension.class)`
+               handles instantiation and field injection automatically. Manual
+               construction breaks injection and causes NPE at runtime, or makes you
+               invent setters that don't exist on the SUT.
+               EXAMPLE invalid (NPE at runtime — mocks never injected):
+                 private MyService myService;
+                 @BeforeEach void init() { myService = new MyService(); }
+               EXAMPLE valid:
+                 @InjectMocks private MyService myService;
 
         # Test class
         - Generate ONE single Java 11 test class
@@ -98,6 +111,12 @@ object BaseConstraints {
             * `anyString()`      → `import static org.mockito.ArgumentMatchers.anyString;`
         - For AssertJ: `import static org.assertj.core.api.Assertions.assertThat;`
           (and `Assertions.fail` if needed for UNTESTABLE_AS_IS or TODO bodies).
+        - For Mockito annotations (NON-static, regular imports):
+            * `@Mock`         → `import org.mockito.Mock;`
+            * `@InjectMocks`  → `import org.mockito.InjectMocks;`
+            * `@Captor`       → `import org.mockito.Captor;`
+            * `@ExtendWith(MockitoExtension.class)` → `import org.junit.jupiter.api.extension.ExtendWith;`
+              and `import org.mockito.junit.jupiter.MockitoExtension;`
 
         # Hard prohibitions
         - NO ReflectionTestUtils, NO setAccessible, NO Field manipulation
@@ -118,6 +137,14 @@ object BaseConstraints {
         - The init protocol described in CONTEXT is PRESCRIPTIVE
         - Apply it in @BeforeEach in the listed order
         - Do NOT skip steps even if they look redundant
+        - **CRITICAL** — This protocol applies AFTER `@InjectMocks` has constructed
+          the SUT and injected the `@Mock` fields. It covers ONLY the residual
+          wiring (setters, post-construct calls) that cannot be done via field
+          injection. Do NOT use this protocol as an excuse to replace `@InjectMocks`
+          with a manual `new SutClass(...)` constructor call (see [R5]).
+        - When a field is listed here with strategy `SETTER` and the SUT has a
+          public setter, call the setter on the SUT (which was created by
+          `@InjectMocks`). Do NOT invent setters that aren't shown in the protocol.
 
         # Coverage scope
         - Cover the nominal path of [targetMethodName]
