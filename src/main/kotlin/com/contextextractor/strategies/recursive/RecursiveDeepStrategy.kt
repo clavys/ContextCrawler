@@ -356,7 +356,10 @@ class RecursiveDeepStrategy : ContextStrategy {
             callGraph = callGraph,
             finder = finder,
             targetMethod = targetMethod,
-            targetMethodKey = targetMethodKey
+            targetMethodKey = targetMethodKey,
+            // V1.4 — branche 10bis : champs hérités accessibles → REFLECTION_INJECTION.
+            // `sutFqn` est le owner du target en V1 (le SUT est la classe au curseur).
+            sutFqn = targetOwner
         )
 
         // Bug CC — targetMethod transmis à SourceCollector pour qu'il l'exclue

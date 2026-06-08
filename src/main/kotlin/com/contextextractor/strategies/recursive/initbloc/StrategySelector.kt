@@ -25,7 +25,12 @@ class StrategySelector(
     private val callGraph: Map<MethodKey, Set<MethodKey>>,
     private val finder: EntryPointFinder,
     private val targetMethod: MethodSignature,
-    private val targetMethodKey: MethodKey
+    private val targetMethodKey: MethodKey,
+    // V1.4 — FQN du SUT (premier élément hierarchique). Sert à détecter
+    // les champs hérités (declaredIn ≠ sutFqn) qui requièrent une
+    // injection par reflection — cf branche 10bis. Optionnel pour rétro-
+    // compat des tests existants ; quand null, la branche 10bis est inerte.
+    private val sutFqn: String? = null
 ) {
 
     fun choose(field: ClassField, sources: List<InitSource>): InitStrategy {
@@ -134,6 +139,25 @@ class StrategySelector(
         // 10. Auto-init dans la méthode cible elle-même.
         if (isAutoInitialized(field)) {
             return InitStrategy.IMPLICIT
+        }
+
+        // 10bis. V1.4 — champ hérité accessible (protected/public/package).
+        // Mockito `PropertyAndSetterInjection.scanForInjection` walke la
+        // hiérarchie (`while classContext != Object.class`), donc un champ
+        // `protected IHMDTO structurePage` déclaré dans une classe parente
+        // EST injecté par @InjectMocks à condition que le test déclare un
+        // `@Mock IHMDTO structurePage` avec un nom matchant (Mockito résout
+        // les ambiguïtés de type par nom). Cf §0.2 invariant « pas de
+        // reflection » : MOCKITO_INJECT_MOCKS est conforme, pas de
+        // ReflectionTestUtils. Le hint « nom à matcher » est rendu côté
+        // ContextRenderStage (cas spécial inherited dans renderInitProtocol).
+        // Vrai bug Astrea case 4.1 — `protected IHMDTO structurePage`
+        // tombait en UNTESTABLE_AS_IS, IHMDTO disparaissait des mocks, LLM
+        // hallucinait le receiver.
+        if (sutFqn != null
+            && field.declaredIn != sutFqn
+            && field.visibility in INJECTABLE_INHERITED_VISIBILITIES) {
+            return InitStrategy.MOCKITO_INJECT_MOCKS
         }
 
         // 11. Aucun chemin → UNTESTABLE_AS_IS.
@@ -282,6 +306,13 @@ class StrategySelector(
             "javax.inject.Inject"
         )
         private val PACKAGE_LIKE = setOf("protected", "package-private")
+        // V1.4 — visibilités d'un champ hérité accessible depuis le SUT.
+        // `private` exclu : un champ private hérité est inaccessible même au
+        // SUT. Pour `package-private`, le test devra être dans le même package
+        // — c'est rappelé dans le rendu §6 mais pas bloquant en V1.4.
+        private val INJECTABLE_INHERITED_VISIBILITIES = setOf(
+            "protected", "public", "package-private"
+        )
         private val SYSTEM_PREFIXES = listOf(
             "java.", "javax.", "jakarta.", "kotlin.", "scala.", "sun.", "com.sun."
         )

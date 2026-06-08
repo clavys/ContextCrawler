@@ -701,6 +701,7 @@ Public method (with args)       ───────►  CALL_PUBLIC_WITH_ARGS(
 Private method + chemin BFS     ───────►  CALL_PUBLIC_TRANSITIVE(...)
 Package-private setter          ───────►  CALL_SAME_PACKAGE(...)
 Auto-init dans methodeCible     ───────►  IMPLICIT
+Champ hérité accessible (V1.4)  ───────►  MOCKITO_INJECT_MOCKS  ← branche 10bis
 Aucun chemin valide             ───────►  UNTESTABLE_AS_IS(raison, pistes)
 ```
 
@@ -716,6 +717,15 @@ Aucun chemin valide             ───────►  UNTESTABLE_AS_IS(raiso
 | **INITIALIZER_BLOCK** | Bloc `{ this.x = ...; }` ou `static { ... }` |
 
 > Pas de stratégie reflection. Si aucune des sources ci-dessus ne donne un chemin légitime, on retourne `UNTESTABLE_AS_IS`.
+>
+> **Exception V1.4 — injection framework implicite (branche 10bis §4.5)** :
+> un champ hérité accessible (visibilité ∈ {public, protected, package-private}
+> et `declaredIn ≠ SUT.fqn`) que le SUT lit sans qu'aucune source §4.1 ne
+> l'assigne est traité comme une **injection framework legacy implicite**
+> (typique : Spring legacy avec champ injecté par convention sans `@Autowired`
+> annoté côté code). Sa stratégie devient `MOCKITO_INJECT_MOCKS` au lieu de
+> `UNTESTABLE_AS_IS` — Mockito.PropertyAndSetterInjection walke la hiérarchie
+> pour la field injection, donc le test peut câbler le mock sans reflection.
 
 ### 4.2 Détection des méthodes assignatrices
 
@@ -914,6 +924,46 @@ fonction choisirStrategie(champ, sources, callGraph, methodeCibleSUT) → Strate
   // 10. Auto-init dans la méthode cible elle-même ?
   Si estAutoInitialisé(champ, methodeCibleSUT) :
     retourner IMPLICIT
+
+  // 10bis (V1.4) — Champ hérité accessible sans annotation d'injection explicite.
+  //
+  // Couvre le cas legacy Spring où un champ `protected` (ou `public` / package-
+  // private) est déclaré dans une classe ancêtre et injecté par convention
+  // framework SANS `@Autowired` / `@Inject` annoté côté code source. Le SUT
+  // l'utilise par référence directe (`this.champ.foo()` ou `champ.foo()`).
+  //
+  // Justification du fallback MOCKITO_INJECT_MOCKS :
+  //   Mockito.PropertyAndSetterInjection.scanForInjection walke
+  //   `classContext.getSuperclass() != Object.class`, donc @InjectMocks
+  //   atteint les champs hérités par field injection. Le test peut déclarer
+  //   `@Mock T nomDuChamp;` et Mockito le câble dans le champ hérité — pas de
+  //   ReflectionTestUtils nécessaire, conforme §0.2.
+  //   N.B. : Mockito désambiguise par NOM en cas de plusieurs champs du même
+  //   type ; le renderer doit donc rappeler le nom EXACT au LLM (cf §6).
+  //
+  // Position dans l'ordre : APRÈS toutes les branches précisant un chemin
+  // d'init explicite (setter / @PostConstruct / méthode publique / etc.).
+  // L'idée : si un parent expose un setter public assignant le champ, la
+  // branche 3 reste préférable (pattern d'init explicite et lisible).
+  // 10bis n'intervient qu'en dernier recours avant UNTESTABLE_AS_IS.
+  //
+  // Garde-fous :
+  //   • `champ.declaredIn ≠ SUT.fqn` (le champ doit être HÉRITÉ ; un champ
+  //     du SUT lui-même sans @Autowired retombe en branche 11 — le manque
+  //     d'annotation explicite est probablement un vrai problème à signaler).
+  //   • `champ.visibilite ∈ {public, protected, package-private}` (un champ
+  //     `private` hérité est inaccessible même au SUT ; on le laisse remonter
+  //     en branche 11 plutôt que de masquer un vrai dysfonctionnement).
+  //
+  // Pourquoi pas une extension de la branche 2 :
+  //   La branche 2 exige une annotation explicite, ce qui est un signal fort
+  //   et sans ambiguïté. La branche 10bis est un fallback heuristique pour le
+  //   legacy ; les placer à des positions différentes permet à la branche 2
+  //   de garder son contrat exact et de ne pas masquer une oubli d'annotation
+  //   sur un champ déclaré dans le SUT (cf garde-fou `declaredIn ≠ SUT.fqn`).
+  Si champ.declaredIn ≠ SUT.fqn
+     ET champ.visibilite ∈ {"public", "protected", "package-private"} :
+    retourner MOCKITO_INJECT_MOCKS
 
   // 11. Aucun chemin → non testable sans refactor
   retourner UNTESTABLE_AS_IS(
@@ -1591,6 +1641,46 @@ public class OrderService {
 ```
 → Stratégie `UNTESTABLE_AS_IS(raison="primeCache jamais appelée par une méthode publique")`.
 → Prompt : test marqué TODO + 3 pistes de refacto.
+
+### 9.6 Champ hérité accessible sans annotation d'injection (branche 10bis V1.4)
+
+Cas réel rencontré sur du code legacy Spring (Astrea — case 4.1) :
+
+```java
+public abstract class BaseControleur {
+    protected IHMDTO structurePage;   // injecté framework, sans @Autowired
+}
+public abstract class TableauPagineControleur extends BaseControleur { ... }
+public class SupervisionDeltaVecControleur extends TableauPagineControleur {
+    public void rechercher() {
+        // Référence directe au champ hérité (pas d'assignation côté code)
+        int max = structurePage.getNombreMax(criteres);
+        ...
+    }
+}
+```
+
+Aucune source §4.1 ne touche `structurePage` (pas de constructeur, pas de
+setter, pas de @PostConstruct, pas de méthode d'init dans la hiérarchie).
+Stricto sensu, la branche 11 produirait `UNTESTABLE_AS_IS` — mais le test
+est techniquement faisable car :
+- le champ est hérité accessible (`protected`, `declaredIn = BaseControleur`)
+- Mockito `PropertyAndSetterInjection.scanForInjection` walke
+  `classContext.getSuperclass() != Object.class` pour la field injection
+
+→ Stratégie `MOCKITO_INJECT_MOCKS` via branche 10bis.
+→ Prompt :
+  - `IHMDTO` listé dans `# Mocks`
+  - Section dédiée `# Inherited fields requiring @Mock by name` qui rappelle
+    au LLM le NOM EXACT à utiliser (Mockito désambiguise par nom)
+  - Le LLM écrit :
+    ```java
+    @Mock IHMDTO structurePage;
+    @InjectMocks SupervisionDeltaVecControleur sut;
+    // Mockito câble structurePage dans le champ hérité automatiquement.
+    ```
+
+→ **Aucune reflection** dans le test (conforme §0.2).
 
 ---
 

@@ -280,4 +280,81 @@ class ContextRenderStageTest {
         assertNotNull(output.lines().find { it.startsWith("# Field initialization protocol") },
             "section protocole d'init obligatoire dès qu'au moins un champ visible")
     }
+
+    // ── V1.4 — champ hérité protected → MOCKITO_INJECT_MOCKS + hint nom ──────
+
+    @Test
+    fun `protected inherited field renders Inherited fields section with mock-name hint`() {
+        // Vraie cause case 4.1 Astrea — `protected IHMDTO structurePage` dans
+        // BaseControleur, lu depuis SUT. Conforme STRATEGIE.md §0.2
+        // « pas de reflection » : la stratégie est MOCKITO_INJECT_MOCKS
+        // (Mockito @InjectMocks walke la hiérarchie pour la field injection).
+        //
+        // Le renderer doit produire une section dédiée qui rappelle au LLM le
+        // NOM EXACT à utiliser pour le @Mock (Mockito résout les ambiguïtés de
+        // type par nom — sans ce hint le LLM peut renommer et perdre l'injection).
+        val pkg = "com.test.inh_field"
+        val fake = fixture {
+            klass("$pkg.IHMDTO") {
+                method("getNombreMax", returns = T("int"))
+            }
+            klass("$pkg.BaseControleur") {
+                field(
+                    name = "structurePage",
+                    type = T("$pkg.IHMDTO"),
+                    visibility = "protected"
+                )
+            }
+            klass("$pkg.SUT", superFqn = "$pkg.BaseControleur") {
+                method("rechercher",
+                    returns = T("int"),
+                    body = "return structurePage.getNombreMax();") {
+                    reads("$pkg.BaseControleur", "structurePage")
+                    calls("$pkg.IHMDTO", "getNombreMax")
+                }
+            }
+            superChain("$pkg.SUT", "$pkg.BaseControleur")
+        }
+        val output = render(fake, "$pkg.SUT", "rechercher")
+
+        // Section dédiée présente.
+        assertTrue(output.contains("# Inherited fields requiring @Mock by name"),
+            "section `# Inherited fields requiring @Mock by name` attendue")
+
+        // Ligne pour structurePage avec son nom et son type FQN.
+        assertTrue(output.contains("@Mock com.test.inh_field.IHMDTO structurePage;"),
+            "ligne suggérant la déclaration @Mock avec le nom EXACT attendu")
+        assertTrue(output.contains("declared in `com.test.inh_field.BaseControleur`"),
+            "le rappel de la classe parente où le champ est déclaré attendu")
+
+        // STRATEGIE.md §0.2 — pas de reflection dans le template rendu.
+        assertFalse(output.contains("ReflectionTestUtils"),
+            "AUCUN ReflectionTestUtils dans le rendu (violation §0.2)")
+        assertFalse(output.contains("setAccessible"),
+            "AUCUN setAccessible dans le rendu (violation §0.2)")
+
+        // Le mock IHMDTO DOIT apparaître dans la section # Mocks (réconciliation
+        // standard MOCKITO_INJECT_MOCKS).
+        assertTrue(output.contains("# Mocks"),
+            "section # Mocks présente")
+        assertTrue(output.contains("com.test.inh_field.IHMDTO"),
+            "IHMDTO doit apparaître dans la section # Mocks")
+
+        // Le champ hérité MOCKITO_INJECT_MOCKS ne doit PAS apparaître dans le
+        // bloc # Field initialization protocol (filtre IMPLICIT_KINDS).
+        assertFalse(output.contains("## Field `structurePage`"),
+            "champ hérité MOCKITO_INJECT_MOCKS doit être géré implicitement via " +
+                "@InjectMocks + hint de nom, pas via un bloc Field initialization")
+    }
+
+    @Test
+    fun `non-inherited MOCKITO_INJECT_MOCKS field does NOT trigger Inherited fields section`() {
+        // Non-régression : la section dédiée n'apparaît que pour des champs
+        // hérités. Un champ @Autowired déclaré dans le SUT ne déclenche rien.
+        // case91 — repository @Autowired dans la SUT elle-même.
+        val output = render(Fixtures.case91(),
+            "com.testproject.case91.OrderService", "calculate")
+        assertFalse(output.contains("# Inherited fields requiring @Mock by name"),
+            "case91 a un repository déclaré dans la SUT → pas de section Inherited")
+    }
 }

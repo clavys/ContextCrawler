@@ -51,6 +51,12 @@ class ContextRenderStage : PromptStage {
             it.metadata[MetaKeys.INIT_STRATEGY_KIND] == "MOCKITO_INJECT_MOCKS"
         }
         renderInstantiationSection(sb, root, hasInjectMocksFields, sutVarName)
+        // V1.4 — champs hérités (declaredIn ≠ sutFqn) tombés en
+        // MOCKITO_INJECT_MOCKS via branche 10bis. Mockito @InjectMocks injecte
+        // dans la hiérarchie, MAIS résout les ambiguïtés de type par nom.
+        // Sans hint « le @Mock doit s'appeler X », le LLM peut renommer le mock
+        // et perdre l'injection. Pas de section si aucun champ hérité.
+        renderInheritedFieldsHint(sb, fields, sutClassFqn)
         renderInitProtocol(sb, fields, sutVarName)
         renderMocks(sb, tree.ofKind(NodeKind.MOCK))
         // Défaut #1 — §3.2bis. On sépare les internes normales des frontières
@@ -270,6 +276,42 @@ class ContextRenderStage : PromptStage {
                 sb.appendLine("$sutVarName.$method();")
             }
             "UNTESTABLE_AS_IS" -> renderUntestableBlock(sb, field)
+        }
+        sb.appendLine()
+    }
+
+    // V1.4 — section dédiée aux champs hérités accessibles (protected/public/
+    // package, declaredIn ≠ sutFqn) tombés en MOCKITO_INJECT_MOCKS via
+    // StrategySelector branche 10bis. Mockito @InjectMocks walke la hiérarchie
+    // pour la field injection (PropertyAndSetterInjection.scanForInjection)
+    // mais désambiguïse par NOM quand plusieurs champs ont le même type.
+    // Sans hint explicit, un LLM peut nommer le @Mock librement et perdre
+    // l'injection silencieusement → NPE runtime. Cette section liste pour
+    // chaque champ hérité le nom EXACT à utiliser pour le @Mock.
+    //
+    // Vraie cause case 4.1 Astrea — `protected IHMDTO structurePage` dans
+    // BaseControleur, lu depuis SupervisionDeltaVecControleur.
+    private fun renderInheritedFieldsHint(
+        sb: StringBuilder,
+        fields: List<ContextNode>,
+        sutClassFqn: String
+    ) {
+        val inherited = fields.filter { field ->
+            val declaringClass = field.metadata[MetaKeys.FIELD_DECLARING_CLASS]
+            val kind = field.metadata[MetaKeys.INIT_STRATEGY_KIND]
+            declaringClass != null
+                && declaringClass != sutClassFqn
+                && kind == "MOCKITO_INJECT_MOCKS"
+        }
+        if (inherited.isEmpty()) return
+        sb.appendLine("# Inherited fields requiring @Mock by name")
+        sb.appendLine("These fields are declared in a parent class. Mockito @InjectMocks walks")
+        sb.appendLine("the class hierarchy for field injection, but disambiguates by NAME when")
+        sb.appendLine("multiple fields share a type. Declare each @Mock with the EXACT name below:")
+        inherited.forEach { field ->
+            val type = field.metadata[MetaKeys.FIELD_TYPE_FQN].orEmpty()
+            val declaringClass = field.metadata[MetaKeys.FIELD_DECLARING_CLASS].orEmpty()
+            sb.appendLine("- `@Mock $type ${field.title};` (declared in `$declaringClass`)")
         }
         sb.appendLine()
     }

@@ -48,7 +48,9 @@
       "Bash(awk '{tests+=$1; skipped+=$2; failures+=$3; errors+=$4} END {print \"Total:\", tests, \"Skipped:\", skipped, \"Failures:\", failures, \"Errors:\", errors}')",
       "Bash(xargs cat)",
       "Bash(awk '{tests+=$1; skipped+=$2; failures+=$3; errors+=$4} END {print \"Total:\", tests, \"Failures:\", failures, \"Errors:\", errors}')",
-      "Bash(./gradlew compileKotlin compileTestKotlin --console=plain)"
+      "Bash(./gradlew compileKotlin compileTestKotlin --console=plain)",
+      "Bash(xargs grep -l \"failure\\\\|error\")",
+      "Bash(awk '{t+=$1; s+=$2; f+=$3; e+=$4} END {print \"Total:\", t, \"tests,\", s, \"skipped,\", f, \"failures,\", e, \"errors\"}')"
     ]
   }
 }

@@ -31,6 +31,12 @@ sealed class InitStrategy {
     object IMPLICIT_VIA_CONSTRUCTOR : InitStrategy()
 
     // 2 — Champ @Autowired/@Inject : Mockito.@InjectMocks fait le travail.
+    // V1.4 — couvre AUSSI les champs hérités accessibles (protected/public/
+    // package) sans @Autowired explicit. PropertyAndSetterInjection de Mockito
+    // walke `superclass != Object.class` pour la field injection, donc un
+    // champ protected déclaré dans un parent EST injecté à condition que le
+    // test déclare un @Mock du même type ET du même NOM (matching ambigu
+    // résolu par nom). Cf §0.2 invariant « pas de reflection ».
     object MOCKITO_INJECT_MOCKS : InitStrategy()
 
     // 3 — Setter public direct.
