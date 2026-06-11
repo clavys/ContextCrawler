@@ -81,6 +81,16 @@ object BaseConstraints {
           "Methods to stub via spy" are the ONLY class-under-test methods you may stub.
         - NEVER invent helper methods on the class under test (no `cut.getXxx()` unless
           `getXxx` is in CONTEXT). If a field value is needed, mock the field's type instead.
+        - V1.4 — methods listed under `# Internal sub-methods` annotated with
+          `[protected]` or `[package-private]` CANNOT be called, stubbed, or
+          verified from the test class (the test is generated in a fresh package
+          by default). The compiler will refuse `doReturn/doNothing/verify(sut).xxx(...)`
+          on a non-public inherited method. Treat them as INFORMATIONAL ONLY —
+          use them to understand observable side effects to assert on the SUT state.
+          INVALID:  `verify(sut).protectedMethod(eq(arg), anyInt());`
+                    `doNothing().when(sut).protectedMethod(any(), anyInt());`
+          VALID:    rely on observable mutations the SUT performs AFTER the call
+                    (e.g. `verify(mockA).businessCall(...)`, `assertThat(sut.getField())...`).
 
         # Imports — strict FQN copy (anti-hallucination)
         - For every type referenced in CONTEXT, copy its FQN VERBATIM into an import.

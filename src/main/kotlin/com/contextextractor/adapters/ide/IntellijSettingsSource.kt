@@ -35,6 +35,9 @@ class IntellijSettingsSource(
             "provider" to state.llmProvider,
             "model" to state.llmModel,
             "tuningProfile" to state.llmTuningProfile
+        ),
+        "testPolicy" to mapOf(
+            "mockitoStrictness" to state.mockitoStrictness
         )
     )
 }

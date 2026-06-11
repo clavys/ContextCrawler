@@ -11,9 +11,27 @@ data class ContextExtractorConfig(
     val classification: ClassificationConfig = ClassificationConfig(),
     val llm: LlmConfig = LlmConfig(),
     val prompt: PromptConfig = PromptConfig(),
-    val budget: Budget = Budget()
+    val budget: Budget = Budget(),
+    // V1.4 — convention équipe sur le code de test généré. Orthogonal au
+    // profil LLM (`llm.tuningProfile`) : LLM-profile = patches modèle-specific,
+    // testPolicy = conventions org/projet. Cf STRATEGIE.md §0.2 + §6bis.
+    val testPolicy: TestPolicyConfig = TestPolicyConfig()
 ) {
     enum class OutputMode { COPY, LLM_CALL, ASK }
+
+    // V1.4 — strictness Mockito injectée dans le prompt CONSTRAINTS.
+    //   STRICT_STUBS : défaut Mockito 4.x + JUnit5 — toute stubbing inutile
+    //                  fait planter le test. Pas d'annotation à ajouter.
+    //   WARN         : log seulement, le test passe. Convention typique
+    //                  legacy Spring (cas Astrea) où les méthodes ont
+    //                  plusieurs branches et tous les stubs ne sont pas
+    //                  exercés à chaque test.
+    //   LENIENT      : silencieux — plus permissif. Utile pour migration.
+    enum class MockitoStrictness { STRICT_STUBS, WARN, LENIENT }
+
+    data class TestPolicyConfig(
+        val mockitoStrictness: MockitoStrictness = MockitoStrictness.STRICT_STUBS
+    )
 
     data class TemplateConfig(
         val dir: String? = null,

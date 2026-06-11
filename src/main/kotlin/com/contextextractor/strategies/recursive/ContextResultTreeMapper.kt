@@ -347,6 +347,11 @@ class ContextResultTreeMapper {
                     // toucher au key.
                     put(MetaKeys.METHOD_CANONICAL, logic.signature.canonical())
                     put(MetaKeys.METHOD_RETURN_TYPE, renderType(logic.signature.returnType))
+                    // V1.4 — visibilité signalée seulement si NON-public.
+                    // Permet au renderer de prévenir le LLM (cf Astrea 4.1).
+                    if (logic.signature.visibility != "public") {
+                        put(MetaKeys.INTERNAL_METHOD_VISIBILITY, logic.signature.visibility)
+                    }
                     if (logic.callSummaries.isNotEmpty()) {
                         put("internalCallSummaries", logic.callSummaries.joinToString("\n"))
                     }

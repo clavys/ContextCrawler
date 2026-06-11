@@ -98,6 +98,13 @@ object MetaKeys {
     // ne jamais lire le corps des méthodes externes »). Vide si non capturé.
     const val METHOD_BODY = "methodBody"                  // root node — corps de methodeCible
     const val INTERNAL_METHOD_BODY = "internalMethodBody" // nœuds INTERNAL_METHOD
+    // V1.4 — visibilité de la méthode interne (`protected`/`package-private`).
+    // Non posée si la méthode est `public` (pas de signal utile). Permet au
+    // renderer de prévenir le LLM : une méthode protected/package héritée
+    // n'est PAS appelable/stubable/verifiable depuis un test dans un autre
+    // package. Vrai bug Astrea case 4.1 — `afficherMessagePour...` protected
+    // dans TableauPagineControleur, test dans .idt.* échoue à la compilation.
+    const val INTERNAL_METHOD_VISIBILITY = "internalMethodVisibility"
 
     // Défaut #1 / §3.2bis — marqueurs STUB_VIA_SPY. Le renderer bascule sur
     // la section « # Méthodes à stubber par spy » quand STUB_VIA_SPY == "true".

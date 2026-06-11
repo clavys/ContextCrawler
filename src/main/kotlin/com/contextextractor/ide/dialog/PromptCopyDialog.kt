@@ -1,5 +1,6 @@
 package com.contextextractor.ide.dialog
 
+import com.contextextractor.core.config.ContextExtractorConfig.MockitoStrictness
 import com.contextextractor.core.model.ContextTree
 import com.contextextractor.core.prompt.PromptBuilder
 import com.intellij.openapi.ide.CopyPasteManager
@@ -42,7 +43,10 @@ class PromptCopyDialog(
     private val initialPrompt: String,
     // Phase 5 — profil de tuning des CONSTRAINTS pour le rebuild "Copy".
     // Null = défaut Qwen pour rétro-compat.
-    private val tuningProfileId: String? = null
+    private val tuningProfileId: String? = null,
+    // V1.4 — strictness Mockito du projet, propagée depuis le service pour
+    // que le rebuild « Copy with enrichment » utilise la même policy.
+    private val mockitoStrictness: MockitoStrictness = MockitoStrictness.STRICT_STUBS
 ) : DialogWrapper(project) {
 
     private val enrichmentArea = JTextArea(3, 80).apply {
@@ -100,7 +104,7 @@ class PromptCopyDialog(
             // USER_ENRICHMENT (cf. PromptBuilder.build : `isNullOrBlank`).
             val enrichment = enrichmentArea.text.trim().takeIf { it.isNotEmpty() }
             val finalPrompt = PromptBuilder
-                .defaultPipelineForProfileId(tuningProfileId)
+                .defaultPipelineForProfileId(tuningProfileId, mockitoStrictness)
                 .build(tree, enrichment)
             CopyPasteManager.getInstance().setContents(StringSelection(finalPrompt))
         }

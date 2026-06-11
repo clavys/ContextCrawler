@@ -389,7 +389,22 @@ class ContextRenderStage : PromptStage {
         if (internals.isEmpty()) return
         sb.appendLine("# Internal sub-methods (informational only, do not mock)")
         for (m in internals) {
-            sb.appendLine("## ${m.title}")
+            // V1.4 — visibilité signalée à côté du nom + warning explicit pour
+            // les méthodes protected/package-private. Vrai bug Astrea 4.1 :
+            // `afficherMessage...` est protected dans TableauPagineControleur,
+            // le LLM tentait `doNothing().when(sut).afficherMessage(...)` →
+            // erreur de compilation Java (visibilité).
+            val visibility = m.metadata[MetaKeys.INTERNAL_METHOD_VISIBILITY].orEmpty()
+            if (visibility.isNotEmpty()) {
+                sb.appendLine("## ${m.title}  `[$visibility]`")
+                sb.appendLine("// ⚠️ Visibility = `$visibility`. This method is NOT")
+                sb.appendLine("// accessible from a test class in a different package — you")
+                sb.appendLine("// CANNOT call, stub via `doReturn/doNothing`, or `verify` it.")
+                sb.appendLine("// Treat its source code as INFORMATIONAL ONLY (helps you")
+                sb.appendLine("// understand observable side effects to assert on the SUT state).")
+            } else {
+                sb.appendLine("## ${m.title}")
+            }
             // STRATEGIE.md §6 + §3.2 — corps source des méthodes intra-SUT.
             // Frontière fermée pour MOCK_EXTERNAL (§3.3 « STOP ») mais les internes
             // sont par construction intra-SUT (cf RecursiveDeepStrategy §3.2 +

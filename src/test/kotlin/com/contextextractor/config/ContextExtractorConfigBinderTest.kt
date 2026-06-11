@@ -213,4 +213,69 @@ class ContextExtractorConfigBinderTest {
         assertEquals(4, cfg.budget.maxGraphDepth)
         // Validation Budget passée (10 ∈ [1,20]) — ne throw pas.
     }
+
+    // ── V1.4 — mockitoStrictness (testPolicy) ───────────────────────────────
+
+    @Test
+    fun `default mockitoStrictness is STRICT_STUBS (Mockito 4x default)`() {
+        val cfg = bind(DefaultsConfigSource())
+        assertEquals(ContextExtractorConfig.MockitoStrictness.STRICT_STUBS,
+            cfg.testPolicy.mockitoStrictness,
+            "défaut conservateur — pas de signal au LLM si aucune config")
+    }
+
+    @Test
+    fun `YAML overrides mockitoStrictness to WARN`() {
+        // Cas Astrea — équipe versionne `.contextextractor.yml` avec WARN.
+        val yamlText = """
+            testPolicy:
+              mockitoStrictness: WARN
+        """.trimIndent()
+        val yaml = object : ConfigSource {
+            override val priority: Int = 20
+            override fun load(): Map<String, Any?> =
+                YamlProjectConfigSource.parse(yamlText, "test")
+        }
+        val cfg = bind(DefaultsConfigSource(), yaml)
+        assertEquals(ContextExtractorConfig.MockitoStrictness.WARN,
+            cfg.testPolicy.mockitoStrictness)
+    }
+
+    @Test
+    fun `YAML project overrides IDE settings on mockitoStrictness`() {
+        // Verrou priorité : YAML (20) > Settings (10). Confirme que la
+        // convention équipe versionnée prime sur la préférence individuelle.
+        val state = ContextCrawlerSettings.State().apply {
+            mockitoStrictness = "LENIENT"
+        }
+        val yamlText = """
+            testPolicy:
+              mockitoStrictness: WARN
+        """.trimIndent()
+        val yaml = object : ConfigSource {
+            override val priority: Int = 20
+            override fun load(): Map<String, Any?> =
+                YamlProjectConfigSource.parse(yamlText, "test")
+        }
+        val cfg = bind(DefaultsConfigSource(), IntellijSettingsSource(state), yaml)
+        assertEquals(ContextExtractorConfig.MockitoStrictness.WARN,
+            cfg.testPolicy.mockitoStrictness,
+            "YAML projet doit gagner contre Settings IDE")
+    }
+
+    @Test
+    fun `invalid mockitoStrictness in YAML throws at bind with expected message`() {
+        // Verrou symétrique à bindOutputMode : valeur enum invalide → erreur
+        // explicite au démarrage, pas un fallback silencieux.
+        val ex = assertThrows(IllegalArgumentException::class.java) {
+            bind(
+                DefaultsConfigSource(),
+                source(20, mapOf("testPolicy" to mapOf("mockitoStrictness" to "very-strict")))
+            )
+        }
+        assertTrue(ex.message!!.contains("mockitoStrictness"),
+            "le message doit pointer la clé fautive : ${ex.message}")
+        assertTrue(ex.message!!.contains("very-strict"),
+            "le message doit inclure la valeur reçue : ${ex.message}")
+    }
 }

@@ -1,6 +1,7 @@
 package com.contextextractor.prompt
 
 import com.contextextractor.core.classifier.DefaultClassifier
+import com.contextextractor.core.config.ContextExtractorConfig.MockitoStrictness
 import com.contextextractor.core.prompt.PromptBuilder
 import com.contextextractor.core.prompt.constraints.BaseConstraints
 import com.contextextractor.core.prompt.constraints.NoTuningProfile
@@ -117,6 +118,73 @@ class ConstraintsProfileSplitTest {
         assertFalse(BaseConstraints.TEXT.contains("(Bug DD)"))
         assertFalse(BaseConstraints.TEXT.contains("(Bug EE)"))
         assertFalse(BaseConstraints.TEXT.contains("(Bug FF"))
+    }
+
+    // ── V1.4 — mockitoStrictness team policy ────────────────────────────────
+
+    @Test
+    fun `default mockitoStrictness STRICT_STUBS does not inject any Mockito strictness block`() {
+        // Verrou rétro-compat : par défaut, le prompt V1.x est inchangé.
+        val out = buildPrompt(PromptBuilder.defaultPipeline(NoTuningProfile))
+        assertFalse(out.contains("# Mockito strictness (team policy)"),
+            "STRICT_STUBS = pas de signal, pas de section parasite")
+        assertFalse(out.contains("@MockitoSettings"),
+            "STRICT_STUBS = pas d'annotation à demander")
+    }
+
+    @Test
+    fun `WARN strictness injects @MockitoSettings instruction with imports`() {
+        // Cas Astrea — convention équipe : autorise les stubs inutiles.
+        val out = buildPrompt(PromptBuilder.defaultPipeline(NoTuningProfile, MockitoStrictness.WARN))
+        assertTrue(out.contains("# Mockito strictness (team policy)"),
+            "section dédiée doit apparaître")
+        assertTrue(out.contains("@MockitoSettings(strictness = Strictness.WARN)"),
+            "annotation exacte attendue dans le prompt")
+        assertTrue(out.contains("org.mockito.junit.jupiter.MockitoSettings"),
+            "import MockitoSettings demandé au LLM")
+        assertTrue(out.contains("org.mockito.quality.Strictness"),
+            "import Strictness demandé au LLM")
+    }
+
+    @Test
+    fun `LENIENT strictness injects the same block with LENIENT value`() {
+        val out = buildPrompt(PromptBuilder.defaultPipeline(NoTuningProfile, MockitoStrictness.LENIENT))
+        assertTrue(out.contains("@MockitoSettings(strictness = Strictness.LENIENT)"),
+            "LENIENT doit produire la même structure avec la valeur LENIENT")
+    }
+
+    @Test
+    fun `strictness block composes with Qwen tuning without losing either`() {
+        // Verrou composition : on doit pouvoir avoir Qwen patches + strictness simultanément.
+        val out = buildPrompt(PromptBuilder.defaultPipeline(Qwen36b35bProfile, MockitoStrictness.WARN))
+        assertTrue(out.contains("(Bug Y)"),
+            "Qwen profile préservé même quand strictness est injecté")
+        assertTrue(out.contains("@MockitoSettings(strictness = Strictness.WARN)"),
+            "strictness préservé même avec Qwen profile")
+    }
+
+    @Test
+    fun `BaseConstraints does not contain any Mockito strictness directive`() {
+        // Verrou structurel symétrique au verrou « pas de Bug X dans Base » :
+        // la base PURE ne doit pas contenir le bloc strictness (injecté seulement
+        // si la team policy le demande).
+        assertFalse(BaseConstraints.TEXT.contains("# Mockito strictness"))
+        assertFalse(BaseConstraints.TEXT.contains("@MockitoSettings"))
+    }
+
+    @Test
+    fun `QwenTuningConstraints does not advertise the team-policy strictness section`() {
+        // La section EN-TÊTE « # Mockito strictness (team policy) » est unique
+        // au compositeur V1.4 — ne doit pas apparaître dans le tuning Qwen.
+        // N.B. : QwenTuningConstraints Bug FF mentionne `@MockitoSettings`
+        // dans une directive d'interdiction (« NEVER add LENIENT globally »),
+        // ce qui est distinct de la directive d'ajout V1.4 (« Annotate with
+        // strictness=WARN »). Conflit potentiel uniquement si team-policy =
+        // LENIENT + profil Qwen actif — limite connue, documentée §6bis.
+        assertFalse(QwenTuningConstraints.TEXT.contains("# Mockito strictness (team policy)"),
+            "header team-policy ne doit pas être dans le tuning Qwen")
+        assertFalse(QwenTuningConstraints.TEXT.contains("Annotate the test class with @MockitoSettings"),
+            "la directive d'ajout V1.4 ne doit pas être dans le tuning Qwen")
     }
 
     @Test

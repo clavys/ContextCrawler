@@ -343,10 +343,23 @@ class JavaPsiIntrospector(
 
             // `new Foo(...)` — sauf les exceptions instanciées directement dans
             // un `throw` (capturées séparément ci-dessous, pas des DTO à bâtir).
+            //
+            // V1.4 step 3 — skip des anonymous classes (`new Listener() {...}`) :
+            // `expression.anonymousClass != null` indique que c'est une création
+            // inline d'une sous-classe synthétique. Sans ce skip, le pipeline
+            // ajoute le PARENT (Listener) aux instantiations, qui finit en
+            // DATA_STRUCTURE via règle 7bis du classifier. Le LLM essaie alors
+            // `new Listener()` qui ne compile pas si Listener est abstract /
+            // interface, ou compile mais ne reflète pas l'override inline (le
+            // comportement effectif au runtime vit dans le bloc `{...}` du body).
+            // Le code source du body est déjà rendu via `Source code:` du target
+            // — le LLM le voit naturellement et le reproduit fidèlement (option α
+            // du design « inline expansion », cf RAPPORT_CONTEXT V1.4 step 3).
             override fun visitNewExpression(expression: PsiNewExpression) {
                 super.visitNewExpression(expression)
                 if (expression.parent is PsiThrowStatement) return
                 if (expression.classReference == null) return
+                if (expression.anonymousClass != null) return
                 expression.type?.let { instantiations.add(PsiTypeMapper.toResolved(it)) }
             }
 

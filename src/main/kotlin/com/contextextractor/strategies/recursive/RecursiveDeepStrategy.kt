@@ -192,10 +192,34 @@ class RecursiveDeepStrategy : ContextStrategy {
             block7.initProtocol, config.budget.maxGraphDepth,
             frameworkPrefixes = config.frameworkPackagePrefixes
         )
+        // V1.4 fix — Astrea case 4.1.
+        //
+        // Bug Astrea : `super.getStructurePage().getNombreMax(...)` accède au
+        // champ hérité `structurePage` via getter trivial. Le mécanisme
+        // `trivialGetterFieldNames` détecte correctement le champ MAIS :
+        //   1. Bug P force `MOCKITO_INJECT_MOCKS` pour ce champ (3e clause
+        //      du filtre → false)
+        //   2. `bodyMentionedFieldNames` ne le capte pas (target n'écrit pas
+        //      `structurePage.X` mais `getStructurePage().X`) → false
+        //   3. `transitiveUsage` ne le capte pas non plus en pratique sur
+        //      Astrea (BFS depuis target visite getStructurePage et devrait
+        //      ajouter structurePage à accessed — mais sur du vrai PSI avec
+        //      beaucoup de méthodes, quelque chose dans la chaîne lâche)
+        //
+        // Conséquence sans le fix : `structurePage` est dropé de
+        // `filteredFields` → son type (IHMDTO) tombe dans `droppedFieldTypes`
+        // → `mocksAfterFieldFilter` drop IHMDTO → le prompt n'a aucune
+        // information sur IHMDTO → le LLM hallucine `mock(Object.class)`
+        // qui ne compile pas.
+        //
+        // Fix : `trivialGetterFieldNames` est ajouté comme 4e clause. C'est
+        // sémantiquement correct — si le pipeline a détecté un trivial getter
+        // accédant à ce field, le field EST utilisé par target indirectement.
         val filteredFields = usefulFields.filter { f ->
             val strategy = block7.initProtocol[f.name]?.recommendedStrategy
             f.name in transitiveUsage ||
                 f.name in bodyMentionedFieldNames ||  // Bug T fallback : body scan textuel
+                f.name in trivialGetterFieldNames ||  // V1.4 — Astrea case 4.1
                 strategy !is InitStrategy.MOCKITO_INJECT_MOCKS
         }
         val droppedFieldNames = (usefulFields - filteredFields).map { it.name }.toSet()

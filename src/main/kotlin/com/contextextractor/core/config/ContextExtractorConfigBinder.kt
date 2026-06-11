@@ -32,8 +32,27 @@ class ContextExtractorConfigBinder(private val layered: LayeredConfig) {
             llm = bindLlm(defaults.llm),
             prompt = bindPrompt(defaults.prompt),
             // Validation à la frontière — toute valeur dégénérée est attrapée ICI.
-            budget = bindBudget(defaults.budget).validated()
+            budget = bindBudget(defaults.budget).validated(),
+            testPolicy = bindTestPolicy(defaults.testPolicy)
         )
+    }
+
+    private fun bindTestPolicy(
+        defaults: ContextExtractorConfig.TestPolicyConfig
+    ): ContextExtractorConfig.TestPolicyConfig {
+        val raw = layered.get<String>("testPolicy.mockitoStrictness")
+        val strictness = if (raw == null) defaults.mockitoStrictness else try {
+            ContextExtractorConfig.MockitoStrictness.valueOf(raw)
+        } catch (e: IllegalArgumentException) {
+            // Verrou : valeur enum invalide ne tombe PAS en silence sur un défaut.
+            // Cohérent avec bindOutputMode — le diagnostic au démarrage doit
+            // pointer la clé fautive et les valeurs valides.
+            throw IllegalArgumentException(
+                "testPolicy.mockitoStrictness: valeur '$raw' invalide. " +
+                    "Valeurs acceptées : ${ContextExtractorConfig.MockitoStrictness.entries.joinToString()}"
+            )
+        }
+        return ContextExtractorConfig.TestPolicyConfig(mockitoStrictness = strictness)
     }
 
     // ── outputMode : enum strict ─────────────────────────────────────────────

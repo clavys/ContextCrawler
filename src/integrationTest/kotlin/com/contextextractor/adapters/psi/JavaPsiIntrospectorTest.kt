@@ -31,6 +31,14 @@ import junit.framework.TestCase
 //    visibility="private", declaredIn="com.demo.OrderService")
 // 3. listSuperClasses(orderService) → [AbstractCacheService] (sans Object)
 // 4. listAnnotations(OnClass("com.demo.OrderService")) → [@Service fqn]
+// 5. (V1.4 step 3) analyzeMethodBody sur un body contenant
+//    `service.process(new Comparator<X>() { compare(...) {...} })` :
+//      analysis.instantiations NE doit PAS contenir "java.util.Comparator"
+//    Garantit que les anonymous classes (`new Foo() {...}`) sont skippées
+//    par visitNewExpression — le LLM voit le bloc inline via `Source code:`
+//    et le pipeline ne pousse pas Foo en DATA_STRUCTURE parasite.
+//    Cas inverse à verrouiller : `new java.util.ArrayList<>()` (NON-anonymous,
+//    pas d'accolade ouverte après) DOIT rester dans analysis.instantiations.
 class JavaPsiIntrospectorTest : TestCase() {
 
     fun `test PsiTypeMapper class is on the integration test classpath`() {

@@ -1,5 +1,6 @@
 package com.contextextractor.core.prompt.stages
 
+import com.contextextractor.core.config.ContextExtractorConfig.MockitoStrictness
 import com.contextextractor.core.model.ContextNode
 import com.contextextractor.core.model.MetaKeys
 import com.contextextractor.core.prompt.PromptContext
@@ -174,36 +175,72 @@ class LayerCompositionStage(
             // Le tuning est inséré APRÈS « # Coverage scope » et AVANT
             // « # Wrapping rules » pour préserver l'ordre V1.1 exact quand
             // le profil Qwen est actif. Cf RAPPORT_CONTEXT §9.9.
-            fun defaults(profile: ConstraintsProfile): Templates = Templates(
+            fun defaults(profile: ConstraintsProfile): Templates =
+                defaults(profile, MockitoStrictness.STRICT_STUBS)
+
+            // V1.4 — overload avec mockitoStrictness pour injecter une section
+            // dédiée dans CONSTRAINTS quand la convention équipe n'est pas
+            // STRICT_STUBS (défaut Mockito 4.x JUnit5).
+            fun defaults(
+                profile: ConstraintsProfile,
+                mockitoStrictness: MockitoStrictness
+            ): Templates = Templates(
                 system = DEFAULT_SYSTEM,
-                constraints = composeConstraints(profile),
+                constraints = composeConstraints(profile, mockitoStrictness),
                 instruction = DEFAULT_INSTRUCTION
             )
 
-            private fun composeConstraints(profile: ConstraintsProfile): String {
+            private fun composeConstraints(
+                profile: ConstraintsProfile,
+                mockitoStrictness: MockitoStrictness
+            ): String {
                 val base = BaseConstraints.TEXT
                 val tuning = profile.tuningText
-                if (tuning.isBlank()) return base
+                val strictnessBlock = mockitoStrictnessBlock(mockitoStrictness)
+                // Tout est vide → rien à composer, on retourne Base inchangé.
+                if (tuning.isBlank() && strictnessBlock.isBlank()) return base
                 // Point d'insertion : juste avant la section « # Wrapping rules »
                 // (qui suit « # Coverage scope » dans BaseConstraints). Ce
                 // marqueur est stable car BaseConstraints.TEXT le contient
                 // toujours par construction.
                 val insertionMarker = "# Wrapping rules for return types"
                 val idx = base.indexOf(insertionMarker)
+                val insertion = buildString {
+                    if (tuning.isNotBlank()) append(tuning)
+                    if (tuning.isNotBlank() && strictnessBlock.isNotBlank()) append("\n\n")
+                    if (strictnessBlock.isNotBlank()) append(strictnessBlock)
+                }
                 if (idx < 0) {
                     // Robustesse — si la section a été renommée dans Base,
-                    // on append le tuning à la fin plutôt que de crasher.
-                    return base + "\n\n" + tuning
+                    // on append à la fin plutôt que de crasher.
+                    return base + "\n\n" + insertion
                 }
                 val before = base.substring(0, idx).trimEnd()
                 val after = base.substring(idx)
                 return buildString {
                     append(before)
                     append("\n\n")
-                    append(tuning)
+                    append(insertion)
                     append("\n\n")
                     append(after)
                 }
+            }
+
+            // V1.4 — bloc d'instruction Strictness pour le LLM. Vide en mode
+            // STRICT_STUBS (défaut Mockito 4.x — pas de signal à ajouter).
+            //
+            // Format : section markdown auto-portante (titre + 2-3 lignes),
+            // sera intercalée dans CONSTRAINTS avec une ligne vide avant/après.
+            private fun mockitoStrictnessBlock(strictness: MockitoStrictness): String {
+                if (strictness == MockitoStrictness.STRICT_STUBS) return ""
+                val value = strictness.name  // "WARN" | "LENIENT"
+                return """
+                    # Mockito strictness (team policy)
+                    - Annotate the test class with @MockitoSettings(strictness = Strictness.$value).
+                    - Add imports: import org.mockito.junit.jupiter.MockitoSettings; import org.mockito.quality.Strictness;
+                    - Rationale: the team allows unused stubs (legacy / branchy code paths). Do NOT remove `when(...)` calls
+                      just because the path under test doesn't exercise them.
+                """.trimIndent()
             }
         }
     }

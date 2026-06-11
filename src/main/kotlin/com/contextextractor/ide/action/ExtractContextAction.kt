@@ -103,7 +103,10 @@ class ExtractContextAction : AnAction() {
                 ContextExtractorConfig.OutputMode.COPY,
                 ContextExtractorConfig.OutputMode.LLM_CALL,
                 ContextExtractorConfig.OutputMode.ASK ->
-                    PromptCopyDialog(project, result.tree, result.prompt, result.tuningProfileId).show()
+                    PromptCopyDialog(
+                        project, result.tree, result.prompt,
+                        result.tuningProfileId, result.mockitoStrictness
+                    ).show()
             }
         }
     }

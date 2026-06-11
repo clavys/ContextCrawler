@@ -52,6 +52,12 @@ class ContextCrawlerSettings : PersistentStateComponent<ContextCrawlerSettings.S
         // "qwen" (défaut, patches Y/Z/AA/DD) | "none" (règles universelles
         // seulement). Cf `core/prompt/constraints/ConstraintsProfile.kt`.
         @JvmField var llmTuningProfile: String = "qwen"
+
+        // V1.4 — strictness Mockito pour le test généré. Valeurs :
+        // "STRICT_STUBS" (défaut, comportement Mockito 4.x JUnit5)
+        // | "WARN" (log only, typique legacy Spring — cas Astrea)
+        // | "LENIENT" (silencieux). Cf ContextExtractorConfig.MockitoStrictness.
+        @JvmField var mockitoStrictness: String = "STRICT_STUBS"
     }
 
     private var internalState: State = State()

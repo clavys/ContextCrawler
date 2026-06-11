@@ -78,14 +78,20 @@ class ContextExtractorService(private val project: Project) {
 
         // Phase 5 — profil de tuning des CONSTRAINTS sélectionné via config
         // (Settings UI + YAML + defaults). Cf RAPPORT_CONTEXT §9.9.
+        // V1.4 — `testPolicy.mockitoStrictness` injecte un bloc
+        // `@MockitoSettings(strictness=…)` dans CONSTRAINTS quand ≠ STRICT_STUBS.
         val prompt = PromptBuilder
-            .defaultPipelineForProfileId(config.llm.tuningProfile)
+            .defaultPipelineForProfileId(
+                config.llm.tuningProfile,
+                config.testPolicy.mockitoStrictness
+            )
             .build(tree)
         return BuildResult(
             prompt = prompt,
             outputMode = config.outputMode,
             tree = tree,
-            tuningProfileId = config.llm.tuningProfile
+            tuningProfileId = config.llm.tuningProfile,
+            mockitoStrictness = config.testPolicy.mockitoStrictness
         )
     }
 
@@ -112,7 +118,10 @@ class ContextExtractorService(private val project: Project) {
         val tree: ContextTree,
         // Phase 5 — propagé jusqu'au dialog pour que le rebuild "Copy"
         // utilise le même profil que l'extraction initiale.
-        val tuningProfileId: String? = null
+        val tuningProfileId: String? = null,
+        // V1.4 — strictness Mockito propagée au dialog pour rebuild cohérent.
+        val mockitoStrictness: ContextExtractorConfig.MockitoStrictness =
+            ContextExtractorConfig.MockitoStrictness.STRICT_STUBS
     ) {
         // Détection du préfixe sentinelle posé par PromptBuilder quand le SUT
         // est non-testable au niveau global. L'action lit ce flag pour router

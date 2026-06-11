@@ -38,6 +38,8 @@ class ContextCrawlerConfigurable : Configurable {
     private val modelField = JBTextField()
     // Phase 5 — sélection du profil de tuning des CONSTRAINTS du prompt.
     private val tuningProfileBox = ComboBox(arrayOf("qwen", "none"))
+    // V1.4 — strictness Mockito injectée dans CONSTRAINTS du prompt.
+    private val mockitoStrictnessBox = ComboBox(arrayOf("STRICT_STUBS", "WARN", "LENIENT"))
 
     private var rootPanel: JPanel? = null
 
@@ -52,6 +54,7 @@ class ContextCrawlerConfigurable : Configurable {
             .addLabeledComponent(JBLabel("LLM provider:"), providerField, 1, false)
             .addLabeledComponent(JBLabel("LLM model:"), modelField, 1, false)
             .addLabeledComponent(JBLabel("Prompt tuning profile:"), tuningProfileBox, 1, false)
+            .addLabeledComponent(JBLabel("Mockito strictness:"), mockitoStrictnessBox, 1, false)
             .addComponentFillVertically(JPanel(), 0)
             .panel
         rootPanel = panel
@@ -65,7 +68,8 @@ class ContextCrawlerConfigurable : Configurable {
             outputModeBox.selectedItem as String? != s.outputMode ||
             providerField.text != s.llmProvider ||
             modelField.text != s.llmModel ||
-            tuningProfileBox.selectedItem as String? != s.llmTuningProfile
+            tuningProfileBox.selectedItem as String? != s.llmTuningProfile ||
+            mockitoStrictnessBox.selectedItem as String? != s.mockitoStrictness
     }
 
     override fun apply() {
@@ -77,6 +81,7 @@ class ContextCrawlerConfigurable : Configurable {
         s.llmProvider = providerField.text.ifBlank { "claude" }
         s.llmModel = modelField.text.ifBlank { "claude-sonnet-4-6" }
         s.llmTuningProfile = (tuningProfileBox.selectedItem as? String) ?: "qwen"
+        s.mockitoStrictness = (mockitoStrictnessBox.selectedItem as? String) ?: "STRICT_STUBS"
     }
 
     override fun reset() {
@@ -86,6 +91,7 @@ class ContextCrawlerConfigurable : Configurable {
         providerField.text = s.llmProvider
         modelField.text = s.llmModel
         tuningProfileBox.selectedItem = s.llmTuningProfile
+        mockitoStrictnessBox.selectedItem = s.mockitoStrictness
     }
 
     override fun disposeUIResources() {

@@ -1,5 +1,6 @@
 package com.contextextractor.core.prompt
 
+import com.contextextractor.core.config.ContextExtractorConfig.MockitoStrictness
 import com.contextextractor.core.model.ContextTree
 import com.contextextractor.core.model.MetaKeys
 import com.contextextractor.core.prompt.meta.LayerKind
@@ -92,11 +93,21 @@ class PromptBuilder(private val stages: List<PromptStage>) {
         // comportement V1.1 (rétro-compat des tests existants).
         fun defaultPipeline(): PromptBuilder = defaultPipeline(Qwen36b35bProfile)
 
-        fun defaultPipeline(profile: ConstraintsProfile): PromptBuilder = PromptBuilder(
+        fun defaultPipeline(profile: ConstraintsProfile): PromptBuilder =
+            defaultPipeline(profile, MockitoStrictness.STRICT_STUBS)
+
+        // V1.4 — overload avec mockitoStrictness. STRICT_STUBS = défaut Mockito
+        // 4.x → comportement V1.x préservé. WARN/LENIENT = team policy.
+        fun defaultPipeline(
+            profile: ConstraintsProfile,
+            mockitoStrictness: MockitoStrictness
+        ): PromptBuilder = PromptBuilder(
             listOf(
                 ContextRenderStage(),
                 MetaPromptComposeStage(),
-                LayerCompositionStage(LayerCompositionStage.Templates.defaults(profile)),
+                LayerCompositionStage(
+                    LayerCompositionStage.Templates.defaults(profile, mockitoStrictness)
+                ),
                 CleanupStage()
             )
         )
@@ -105,5 +116,15 @@ class PromptBuilder(private val stages: List<PromptStage>) {
         // appel depuis l'IDE qui n'a accès qu'à la valeur YAML/Settings.
         fun defaultPipelineForProfileId(profileId: String?): PromptBuilder =
             defaultPipeline(resolveConstraintsProfile(profileId))
+
+        // V1.4 — variante qui prend aussi le mockitoStrictness depuis la string
+        // config (YAML/Settings). Fallback STRICT_STUBS si valeur invalide.
+        fun defaultPipelineForProfileId(
+            profileId: String?,
+            mockitoStrictness: MockitoStrictness
+        ): PromptBuilder = defaultPipeline(
+            resolveConstraintsProfile(profileId),
+            mockitoStrictness
+        )
     }
 }

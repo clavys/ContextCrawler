@@ -76,5 +76,19 @@
             <add-to-group group-id="ToolsMenu" anchor="last"/>
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
         </action>
+
+        <!-- V1.4 — Dump SUT internals : pour chaque classe de la hierarchy,
+             liste les fields/methods vus par PSI + l'introspection du target.
+             Cible : localiser précisément où l'adapter PSI lâche sur du code
+             prod (case 4.1 Astrea). Indépendant du pipeline principal. -->
+        <action
+            id="com.contextextractor.DumpSutInternalsAction"
+            class="com.contextextractor.ide.action.DumpSutInternalsAction"
+            text="Dump SUT Internals (ContextCrawler)"
+            description="Dumps PSI internals (fields, methods, target body+calls+accesses) for the SUT under cursor to clipboard.">
+            <keyboard-shortcut keymap="$default" first-keystroke="alt shift X"/>
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
     </actions>
 </idea-plugin>
