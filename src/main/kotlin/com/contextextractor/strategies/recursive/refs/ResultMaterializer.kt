@@ -79,6 +79,12 @@ class ResultMaterializer(
         val out = LinkedHashMap<String, DataStructureInfo>()
         graph.allReferences().forEach { ref ->
             if (classifications[ref.fqn] != ExtractionMode.DATA_STRUCTURE) return@forEach
+            // V1.4.1 Bug #E — une variable de type générique (E, T, K, V…) fuit
+            // des signatures JDK (`List.remove(int):E`) comme nom nu sans package.
+            // Ce n'est pas un type constructible : la rendre `## E [SETTER_BASED]`
+            // est du bruit pur pour le LLM (vu en prod Astrea case 4.2). Un FQN
+            // sans '.' ne peut pas être une vraie classe d'entreprise — on drop.
+            if (!ref.fqn.contains('.')) return@forEach
             val descriptor = ref.descriptor
             if (descriptor == null) {
                 // §8bis.1 — type non résolvable : entrée stub SETTER_BASED

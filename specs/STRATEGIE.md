@@ -692,6 +692,7 @@ Source détectée                           StrategieInit retournée
 ─────────────────────                     ─────────────────────────
 Constructor parameter           ───────►  CONSTRUCTOR
 @Autowired/@Inject field        ───────►  MOCKITO_INJECT_MOCKS
+Auto-init dans methodeCible     ───────►  IMPLICIT  ← branche 2bis (V1.4.1)
 Public setter                   ───────►  SETTER(methode)
 @PostConstruct simple           ───────►  CALL_POST_CONSTRUCT(init)
 FieldInitializer (valeur sûre)  ───────►  IMPLICIT
@@ -700,7 +701,6 @@ Public method (with stubs)      ───────►  CALL_PUBLIC_WITH_STUBS
 Public method (with args)       ───────►  CALL_PUBLIC_WITH_ARGS(...)
 Private method + chemin BFS     ───────►  CALL_PUBLIC_TRANSITIVE(...)
 Package-private setter          ───────►  CALL_SAME_PACKAGE(...)
-Auto-init dans methodeCible     ───────►  IMPLICIT
 Champ hérité accessible (V1.4)  ───────►  MOCKITO_INJECT_MOCKS  ← branche 10bis
 Aucun chemin valide             ───────►  UNTESTABLE_AS_IS(raison, pistes)
 ```
@@ -859,6 +859,35 @@ fonction choisirStrategie(champ, sources, callGraph, methodeCibleSUT) → Strate
   Si "@Autowired" ∈ champ.annotations OU "@Inject" ∈ champ.annotations :
     retourner MOCKITO_INJECT_MOCKS
 
+  // 2bis (V1.4.1) — Auto-init par la méthode cible elle-même.
+  //
+  // DÉPLACÉE depuis la branche 10 (vrai NPE Astrea case 4.1) : si la cible
+  // écrit le champ avant toute lecture (ou ne le lit jamais — champ output),
+  // AUCUNE initialisation n'est requise — la question des branches 3-9 ne se
+  // pose même pas. L'ancienne position (branche 10) laissait la branche 6
+  // élire une méthode publique assignatrice (`calculerPremierDernierElementsPage`
+  // pour `dernierElementListe`/`premierElementListe`) et générer un step
+  // CALL_PUBLIC_WITH_ARGS dans @BeforeEach : inutile (la cible écrase la
+  // valeur) ET fragile (le LLM mocke le paramètre PageEvent sans stubber
+  // `getComponent()` → cast null → NPE avant même l'appel de la cible).
+  //
+  // Pourquoi APRÈS les branches 1-2 :
+  //   • CONSTRUCTOR conditionne l'instanciation du SUT (le constructeur doit
+  //     être appelé de toute façon) — la stratégie par champ informe le bloc
+  //     d'instanciation global, on ne la masque pas.
+  //   • @Autowired est un signal explicite à coût nul : @InjectMocks câble le
+  //     mock automatiquement, et un mock non utilisé n'est PAS une erreur en
+  //     mode strict (seuls les stubbings inutiles le sont).
+  //
+  // Limite assumée (V1, identique à l'ancienne branche 10) : analyse
+  // positionnelle des accès DIRECTS dans la cible, pas d'analyse de flot.
+  // Une écriture conditionnelle positionnée avant la première lecture compte
+  // comme auto-init. N.B. : le pattern lazy-guard `if (this.f == null)
+  // this.f = ...` n'est PAS un faux positif — le test `== null` est une
+  // LECTURE qui précède l'écriture, donc estAutoInitialisé retourne faux.
+  Si estAutoInitialisé(champ, methodeCibleSUT) :
+    retourner IMPLICIT
+
   // 3. Setter public
   setterPublic = sources.firstOrNull { it is Setter ET it.methode.visibilite == "public" }
   Si setterPublic ≠ null :
@@ -921,9 +950,7 @@ fonction choisirStrategie(champ, sources, callGraph, methodeCibleSUT) → Strate
   Si methodPackage ≠ null :
     retourner CALL_SAME_PACKAGE(methodPackage.methode, [methodPackage.methode.nom])
 
-  // 10. Auto-init dans la méthode cible elle-même ?
-  Si estAutoInitialisé(champ, methodeCibleSUT) :
-    retourner IMPLICIT
+  // 10. (V1.4.1 — déplacée en branche 2bis, voir ci-dessus.)
 
   // 10bis (V1.4) — Champ hérité accessible sans annotation d'injection explicite.
   //
@@ -975,7 +1002,22 @@ fonction estAutoInitialisé(champ, methodeCible):
   ast = AST(methodeCible)
   premièreLecture = ast.firstNode { accède champ.nom en lecture }
   premièreAssignation = ast.firstNode { assigne champ.nom (directement ou via appel transitif) }
-  retourner premièreAssignation ≠ null ET premièreAssignation.position < premièreLecture.position
+
+  // V1.4.1 — formalisation des 4 cas (Bug CC + garde read-before-write) :
+  Si premièreAssignation ≠ null ET premièreLecture ≠ null :
+    // write-then-read (§4.5 original) vs read-then-write (init REQUISE —
+    // l'ancien fallback Bug CC retournait à tort vrai dès qu'une assignation
+    // existait, même précédée d'une lecture)
+    retourner premièreAssignation.position < premièreLecture.position
+  Si premièreAssignation ≠ null :
+    // write-only — champ output pur, jamais lu par la cible (Bug CC)
+    retourner vrai
+  Si premièreLecture ≠ null :
+    // read-only — la valeur à l'entrée compte, init requise
+    retourner faux
+  // aucun accès direct détecté — fallback listFieldAssignments (Bug CC,
+  // pour les introspecteurs qui ne taguent pas les écritures en accès)
+  retourner listFieldAssignments(methodeCible).any { it.champ == champ.nom }
 ```
 
 ### 4.6 Diagnostic UNTESTABLE_AS_IS

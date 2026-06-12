@@ -58,7 +58,21 @@ class ContextRenderStage : PromptStage {
         // et perdre l'injection. Pas de section si aucun champ hérité.
         renderInheritedFieldsHint(sb, fields, sutClassFqn)
         renderInitProtocol(sb, fields, sutVarName)
-        renderMocks(sb, tree.ofKind(NodeKind.MOCK))
+        // V1.4.1 Fix D — le @Mock d'un champ MOCKITO_INJECT_MOCKS doit porter
+        // le NOM DU CHAMP, pas le nom dérivé du type : Mockito désambiguïse
+        // par nom. Vrai bug Astrea case 4.1 (2e itération) : `# Mocks` rendait
+        // `@Mock IHMDTO iHMDTO` + le hint inherited demandait `structurePage`
+        // → le LLM déclarait LES DEUX et stubbait `iHMDTO` (jamais injecté) ;
+        // le mock réellement injecté restait non stubbé → getter null →
+        // unboxing → NPE. Map type→nom restreinte aux types portés par
+        // EXACTEMENT un champ (sinon ambigu, on garde le nom dérivé du type).
+        val injectedFieldNameByType = fields
+            .filter { it.metadata[MetaKeys.INIT_STRATEGY_KIND] == "MOCKITO_INJECT_MOCKS" }
+            .groupBy { it.metadata[MetaKeys.FIELD_TYPE_FQN].orEmpty() }
+            .filterKeys { it.isNotEmpty() }
+            .mapNotNull { (type, fs) -> fs.singleOrNull()?.let { type to it.title } }
+            .toMap()
+        renderMocks(sb, tree.ofKind(NodeKind.MOCK), injectedFieldNameByType)
         // Défaut #1 — §3.2bis. On sépare les internes normales des frontières
         // STUB_VIA_SPY et on rend chaque catégorie dans sa section dédiée.
         val internals = tree.ofKind(NodeKind.INTERNAL_METHOD)
@@ -313,6 +327,14 @@ class ContextRenderStage : PromptStage {
             val declaringClass = field.metadata[MetaKeys.FIELD_DECLARING_CLASS].orEmpty()
             sb.appendLine("- `@Mock $type ${field.title};` (declared in `$declaringClass`)")
         }
+        // V1.4.1 Fix D — la 2e itération Astrea a montré le LLM déclarant DEUX
+        // mocks du même type (le nom du hint + le nom dérivé du type lu dans
+        // `# Mocks`) puis stubbant celui qui n'est jamais injecté → NPE.
+        // Depuis Fix D, `# Mocks` rend déjà le bon nom — on verrouille ici
+        // l'unicité pour couper la branche « je déclare les deux par prudence ».
+        sb.appendLine("The `# Mocks` block below already uses these exact names — copy it as-is.")
+        sb.appendLine("Do NOT declare a SECOND mock of the same type under a different name:")
+        sb.appendLine("your stubs would land on the mock that is never injected (NPE at runtime).")
         sb.appendLine()
     }
 
@@ -337,8 +359,18 @@ class ContextRenderStage : PromptStage {
 
     // ── # Mocks ──────────────────────────────────────────────────────────────
 
-    private fun renderMocks(sb: StringBuilder, mocks: List<ContextNode>) {
+    private fun renderMocks(
+        sb: StringBuilder,
+        mocks: List<ContextNode>,
+        injectedFieldNameByType: Map<String, String>
+    ) {
         if (mocks.isEmpty()) return
+        // V1.4.1 Fix D — nom de variable : si le type correspond à un champ
+        // unique en MOCKITO_INJECT_MOCKS, on prend le nom du champ (injection
+        // par nom), sinon le nom dérivé du type (règle de style standard).
+        fun varNameFor(declared: String): String =
+            injectedFieldNameByType[declared]
+                ?: declared.substringAfterLast('.').replaceFirstChar { it.lowercase() }
         sb.appendLine("# Mocks (annotate with @Mock {declaredType})")
         // Bug X — bloc Java prêt à copier-coller. Le LLM était observé en
         // production faisant `new PageDataDTO()` ou `new LigneResultatDTO()`
@@ -350,8 +382,7 @@ class ContextRenderStage : PromptStage {
         sb.appendLine("```java")
         for (mock in mocks) {
             val declared = mock.metadata[MetaKeys.MOCK_DECLARED_TYPE].orEmpty()
-            val varName = declared.substringAfterLast('.')
-                .replaceFirstChar { it.lowercase() }
+            val varName = varNameFor(declared)
             sb.appendLine("@Mock")
             sb.appendLine("private $declared $varName;")
         }
@@ -360,8 +391,7 @@ class ContextRenderStage : PromptStage {
         for (mock in mocks) {
             val declared = mock.metadata[MetaKeys.MOCK_DECLARED_TYPE].orEmpty()
             val concrete = mock.metadata[MetaKeys.MOCK_CONCRETE_TYPE].orEmpty()
-            val varName = declared.substringAfterLast('.')
-                .replaceFirstChar { it.lowercase() }
+            val varName = varNameFor(declared)
             sb.appendLine("## $declared  (concrete: $concrete)")
             val sigs = mock.metadata[MetaKeys.MOCK_SIGNATURES].orEmpty()
             if (sigs.isNotEmpty()) {
@@ -525,10 +555,36 @@ class ContextRenderStage : PromptStage {
         // CUSTOM pourraient apparaître à terme (extension par stratégies tierces).
         val staticOnly = statics.filter { it.metadata.containsKey("staticClass") }
         if (staticOnly.isEmpty()) return
+        // V1.4.1 Bug HH — partition utilitaires purs vs statics à mocker.
+        // Vrai bug Astrea case 4.2 : le prompt ordonnait
+        // `mockStatic(CollectionUtils.class)` ; le LLM obéissait sans stubber
+        // `isNotEmpty` → dans un MockedStatic, une méthode non stubbée retourne
+        // la VALEUR PAR DÉFAUT (false), pas la vraie implémentation → le sort
+        // de `trierListeDeroulanteParCode` sautait → les stubs Bug EE sur les
+        // éléments devenaient orphelins → UnnecessaryStubbingException.
+        // Les utilitaires purs (commons, guava, JDK) sont déterministes et sans
+        // effet de bord : la vraie implémentation travaille sur les données du
+        // test — il ne faut PAS les mocker.
+        val (pure, mockable) = staticOnly.partition { node ->
+            val cls = node.metadata["staticClass"].orEmpty()
+            PURE_UTILITY_STATIC_PREFIXES.any { cls.startsWith(it) }
+        }
         sb.appendLine("# Detected user static calls")
-        sb.appendLine("Mock via Mockito.mockStatic({class}.class):")
-        for (sc in staticOnly) {
-            sb.appendLine("- ${sc.title}")
+        if (mockable.isNotEmpty()) {
+            sb.appendLine("Mock via Mockito.mockStatic({class}.class):")
+            for (sc in mockable) {
+                sb.appendLine("- ${sc.title}")
+            }
+        }
+        if (pure.isNotEmpty()) {
+            sb.appendLine("Pure utility statics — do NOT wrap these in mockStatic. They are")
+            sb.appendLine("side-effect-free: the REAL implementation works on your test data.")
+            sb.appendLine("Inside a MockedStatic, any method you forget to stub returns the")
+            sb.appendLine("DEFAULT value (false/0/null) instead of the real result, silently")
+            sb.appendLine("changing the execution path:")
+            for (sc in pure) {
+                sb.appendLine("- ${sc.title}")
+            }
         }
         sb.appendLine()
     }
@@ -547,6 +603,18 @@ class ContextRenderStage : PromptStage {
         // adapter via un stub explicite ailleurs.
         private val SYSTEM_PREFIXES_FOR_DO_EXPR = listOf(
             "java.", "javax.", "jakarta.", "kotlin.", "scala.", "sun.", "com.sun."
+        )
+
+        // V1.4.1 Bug HH — librairies utilitaires pures dont les statics sont
+        // déterministes et sans effet de bord. La vraie implémentation est
+        // préférable à un mockStatic (qui détourne TOUTES les méthodes de la
+        // classe vers des valeurs par défaut si non stubbées). Les statics du
+        // domaine projet (fr.gouv...AutoCompletionUtils) restent à mocker :
+        // leur retour alimente la logique métier que le test doit contrôler.
+        private val PURE_UTILITY_STATIC_PREFIXES = listOf(
+            "org.apache.commons.", "com.google.common.",
+            "java.", "javax.", "jakarta.",
+            "org.springframework.util."
         )
     }
 }

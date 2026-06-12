@@ -10,8 +10,9 @@ import com.contextextractor.core.model.init.InitStrategy
 import com.contextextractor.core.model.init.MethodInitKind
 import com.contextextractor.core.model.init.MethodKey
 
-// Arbre de décision §4.5 — applique les 11 branches dans l'ordre strict pour
-// trancher la stratégie d'initialisation d'un champ.
+// Arbre de décision §4.5 — applique les branches dans l'ordre strict pour
+// trancher la stratégie d'initialisation d'un champ (1, 2, 2bis, 3-9, 10bis, 11 ;
+// la branche 10 historique est devenue 2bis en V1.4.1 — Fix C).
 //
 // Une instance par analyse SUT (réutilisée pour tous les champs) — partage le
 // callGraph et l'EntryPointFinder entre les appels successifs à `choose()`.
@@ -42,6 +43,18 @@ class StrategySelector(
         // 2. Champ @Autowired/@Inject — InjectMocks.
         if (field.annotations.any { it in INJECT_ANNOTATIONS }) {
             return InitStrategy.MOCKITO_INJECT_MOCKS
+        }
+
+        // 2bis. V1.4.1 — auto-init par la cible, déplacée depuis la branche 10
+        // (vrai NPE Astrea case 4.1). Si la cible écrit le champ avant toute
+        // lecture (ou ne le lit jamais), aucune init n'est requise — laisser la
+        // branche 6 élire une méthode publique assignatrice générait un step
+        // @BeforeEach inutile (valeur écrasée par la cible) et fragile (LLM
+        // mocke le paramètre sans stubber ses getters → NPE). Reste APRÈS 1-2 :
+        // CONSTRUCTOR conditionne l'instanciation du SUT, @Autowired est un
+        // signal explicite à coût nul (mock non utilisé ≠ erreur en strict).
+        if (isAutoInitialized(field)) {
+            return InitStrategy.IMPLICIT
         }
 
         // 3. Setter public direct.
@@ -136,10 +149,7 @@ class StrategySelector(
             )
         }
 
-        // 10. Auto-init dans la méthode cible elle-même.
-        if (isAutoInitialized(field)) {
-            return InitStrategy.IMPLICIT
-        }
+        // 10. (V1.4.1 — déplacée en branche 2bis, voir ci-dessus.)
 
         // 10bis. V1.4 — champ hérité accessible (protected/public/package).
         // Mockito `PropertyAndSetterInjection.scanForInjection` walke la
@@ -209,16 +219,21 @@ class StrategySelector(
             .filter { it.fieldName == field.name }
         val firstWrite = accesses.indexOfFirst { it.write }
         val firstRead = accesses.indexOfFirst { !it.write }
-        // Cas 1 — write-then-read dans target : auto-init §4.5 original.
-        if (firstWrite >= 0 && firstRead >= 0 && firstWrite < firstRead) return true
-        // Bug CC — Cas 2 — write-only dans target (champ output, jamais relu).
-        // Détection via listFieldAssignments car listFieldAccesses peut ne pas
-        // tagger systématiquement les écritures selon le port.
-        val assignments = introspector.listFieldAssignments(targetMethod)
-            .filter { it.fieldName == field.name }
-        if (assignments.isNotEmpty()) return true
-        if (firstWrite >= 0 && firstRead < 0) return true
-        return false
+        return when {
+            // write-then-read (§4.5 original) vs read-then-write. V1.4.1 :
+            // l'ancien fallback retournait vrai dès qu'une assignation existait,
+            // même précédée d'une lecture — devenu dangereux en branche 2bis
+            // (le champ aurait été IMPLICIT alors que sa valeur d'entrée compte).
+            firstWrite >= 0 && firstRead >= 0 -> firstWrite < firstRead
+            // Bug CC — write-only : champ output pur, jamais relu par la cible.
+            firstWrite >= 0 -> true
+            // read-only : la valeur à l'entrée compte, init requise.
+            firstRead >= 0 -> false
+            // Aucun accès tagué — fallback listFieldAssignments (Bug CC, pour
+            // les introspecteurs qui ne taguent pas les écritures en accès).
+            else -> introspector.listFieldAssignments(targetMethod)
+                .any { it.fieldName == field.name }
+        }
     }
 
     // §4.6 construireRaison — 3 templates conditionnels.

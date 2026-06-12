@@ -72,6 +72,12 @@ object BaseConstraints {
           (first letter lowercased, rest verbatim). Example: `PageDataDTO pageDataDTO;`,
           `LigneResultatSupervisionDeltaVecDTO ligneResultatSupervisionDeltaVecDTO;`.
           No abbreviations, no `dto`, no `obj`, no single-letter names.
+          EXCEPTION (V1.4.1) — when CONTEXT prescribes an explicit variable name
+          (the `# Mocks` VERBATIM block, or `# Inherited fields requiring @Mock
+          by name`), that name WINS over the type-derived rule. NEVER declare a
+          SECOND mock of the same type under the type-derived name "to be safe":
+          @InjectMocks disambiguates by field NAME, so your stubs would land on
+          the duplicate mock that is never injected — NPE at runtime.
         - Method naming: camelCase only — NO underscore `_`, NO hyphen `-` in method names.
           Example: `redirigerVersDetailsDeltaVecNominal()`, not `rediriger_vers_details_nominal()`.
 

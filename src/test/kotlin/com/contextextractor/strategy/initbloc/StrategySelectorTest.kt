@@ -20,8 +20,9 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
-// Sous-étape 4e-ε — vérifie les 11 branches de §4.5 + sous-branches 6a/6b/6c
-// + sorties 7a/7b/7c. Total : 18 tests (15 branches/sorties + 3 overrides).
+// Sous-étape 4e-ε — vérifie les branches de §4.5 (1, 2, 2bis, 3-9, ex-10, 11)
+// + sous-branches 6a/6b/6c + sorties 7a/7b/7c + overrides de priorité.
+// V1.4.1 Fix C : la branche auto-init est passée de 10 à 2bis — 4 tests dédiés.
 //
 // Chaque test construit une situation minimale, puis appelle directement
 // StrategySelector.choose(field, sources) — c'est le selector qui est sous test,
@@ -97,6 +98,103 @@ class StrategySelectorTest {
         // Même avec un setter source disponible, @Autowired gagne (override testé en 16).
         val result = sel.choose(annotated, listOf(InitSource.Setter("setRepo", T("com.test.Repo"))))
         assertEquals(InitStrategy.MOCKITO_INJECT_MOCKS, result)
+    }
+
+    // -- Branch 2bis (V1.4.1 — Fix C, vrai NPE Astrea case 4.1) ------------------
+
+    @Test
+    fun `branch 2bis — write-only target field beats public assignor with args`() {
+        // Vrai NPE Astrea case 4.1 : `dernierElementListe` est écrit par target
+        // sans jamais être lu, mais `calculerPremierDernierElementsPage(PageEvent)`
+        // est une assignatrice publique. L'ancienne position (branche 10) laissait
+        // la branche 6 imposer CALL_PUBLIC_WITH_ARGS → le @BeforeEach généré
+        // appelait la méthode avec un PageEvent mocké sans stubber getComponent()
+        // → cast null → NPE avant même l'appel de la cible.
+        val fake = fixture {
+            klass("com.test.A") {
+                field("dernierElementListe", T("int"))
+                method("calculate") {
+                    assigns("com.test.A", "dernierElementListe", rhsExpression = "1")
+                }
+            }
+        }
+        val target = fake.listMethodsOf("com.test.A").single { it.name == "calculate" }
+        val sel = selectorFor(fake, setOf("com.test.A"), target)
+        val publicInit = aMethod("com.test.A", "calculerPremierDernierElementsPage",
+            visibility = "public",
+            params = listOf(Parameter("evenement", T("org.primefaces.event.data.PageEvent"))))
+        val sources = listOf(InitSource.MethodInitializer(
+            kind = MethodInitKind.ORDINARY, method = publicInit,
+            visibility = "public",
+            parametersRequired = listOf(Parameter("evenement", T("org.primefaces.event.data.PageEvent"))),
+            hasNullGuard = false, externalCalls = emptyList(), assignsAlso = emptyList()
+        ))
+        assertEquals(InitStrategy.IMPLICIT,
+            sel.choose(aField("dernierElementListe", "int"), sources))
+    }
+
+    @Test
+    fun `branch 2bis — write-then-read target field beats public Setter`() {
+        // `lignesResultatSupervisionDeltaVecDTO` : target fait `= new ArrayList<>()`
+        // puis lit. Le step SETTER en @BeforeEach était inutile (valeur écrasée)
+        // et bruyant (`set...(mock(List.class))` raw-type) → IMPLICIT.
+        val fake = fixture {
+            klass("com.test.A") {
+                field("lignes", T("java.util.List"))
+                method("calculate") {
+                    assigns("com.test.A", "lignes", rhsExpression = "new ArrayList<>()")
+                    reads("com.test.A", "lignes")
+                }
+            }
+        }
+        val target = fake.listMethodsOf("com.test.A").single { it.name == "calculate" }
+        val sel = selectorFor(fake, setOf("com.test.A"), target)
+        assertEquals(InitStrategy.IMPLICIT,
+            sel.choose(aField("lignes", "java.util.List"),
+                listOf(InitSource.Setter("setLignes", T("java.util.List")))))
+    }
+
+    @Test
+    fun `branch 2bis — read-then-write target field is NOT auto-init, Setter wins`() {
+        // Garde V1.4.1 sur isAutoInitialized : une lecture AVANT la première
+        // écriture signifie que la valeur d'entrée compte — init REQUISE.
+        // L'ancien fallback Bug CC retournait vrai dès qu'une assignation
+        // existait, sans regarder sa position relative aux lectures.
+        val fake = fixture {
+            klass("com.test.A") {
+                field("buffer", T("java.util.List"))
+                method("calculate") {
+                    reads("com.test.A", "buffer")
+                    assigns("com.test.A", "buffer", rhsExpression = "new ArrayList<>()")
+                }
+            }
+        }
+        val target = fake.listMethodsOf("com.test.A").single { it.name == "calculate" }
+        val sel = selectorFor(fake, setOf("com.test.A"), target)
+        assertEquals(InitStrategy.SETTER("setBuffer"),
+            sel.choose(aField("buffer", "java.util.List"),
+                listOf(InitSource.Setter("setBuffer", T("java.util.List")))))
+    }
+
+    @Test
+    fun `branch 2 priority — Autowired write-only field still MOCKITO_INJECT_MOCKS`() {
+        // 2bis reste APRÈS 2 : l'annotation explicite est un signal fort à coût
+        // nul — @InjectMocks câble le mock automatiquement et un mock non
+        // utilisé n'est PAS une erreur en mode strict (seuls les stubbings
+        // inutiles le sont).
+        val fake = fixture {
+            klass("com.test.A") {
+                field("repo", T("com.test.Repo"))
+                method("calculate") {
+                    assigns("com.test.A", "repo", rhsExpression = "null")
+                }
+            }
+        }
+        val target = fake.listMethodsOf("com.test.A").single { it.name == "calculate" }
+        val sel = selectorFor(fake, setOf("com.test.A"), target)
+        val annotated = aField("repo", "com.test.Repo",
+            annotations = listOf("org.springframework.beans.factory.annotation.Autowired"))
+        assertEquals(InitStrategy.MOCKITO_INJECT_MOCKS, sel.choose(annotated, emptyList()))
     }
 
     // -- Branch 3 ---------------------------------------------------------------
@@ -366,10 +464,10 @@ class StrategySelectorTest {
         assertEquals(listOf("doInit"), (result as InitStrategy.CALL_SAME_PACKAGE).callChain)
     }
 
-    // -- Branch 10 --------------------------------------------------------------
+    // -- Branch 10 (V1.4.1 — déplacée en 2bis, sémantique inchangée) -------------
 
     @Test
-    fun `branch 10 — auto-init in target method returns IMPLICIT`() {
+    fun `branch 2bis ex-10 — auto-init in target method returns IMPLICIT`() {
         // Target assigne `x` AVANT de le lire — ordre source garanti par le DSL.
         val fake = fixture {
             klass("com.test.A") {

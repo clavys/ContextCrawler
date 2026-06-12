@@ -28,7 +28,19 @@ package com.contextextractor.core.prompt.constraints
 // élément à la liste puis le retirer avant le tri). Mockito strict rejette
 // les stubs orphelins en @AfterEach.
 //
-// **Pourquoi un fichier séparé** : ces 6 sections font ~110 lignes de prompt.
+// **Bug GG** — isSameAs sur une collection reconstruite par le SUT. Astrea
+// case 4.1 : `rechercher` fait `this.lignes = new ArrayList<>();
+// this.lignes.addAll(stubbed); return this.lignes;` — le LLM assertait
+// `assertThat(returned).isSameAs(resultats)` (identité) alors que la cible
+// retourne SA PROPRE liste → fail runtime garanti. Égalité de contenu requise.
+//
+// **Bug HH** — MockedStatic sans stub = valeur par défaut. Astrea case 4.2 :
+// le LLM wrappait `mockStatic(CollectionUtils.class)` sans stubber
+// `isNotEmpty` → retourne false (défaut) au lieu d'exécuter la vraie
+// implémentation → le sort interne sautait → les stubs Bug EE sur les
+// éléments devenaient orphelins → UnnecessaryStubbingException.
+//
+// **Pourquoi un fichier séparé** : ces sections font ~140 lignes de prompt.
 // Pour un LLM puissant qui ne fait pas ces erreurs (Claude Opus, GPT-4),
 // les inclure noierait les règles structurelles et gaspillerait des tokens.
 // Le profile [Qwen36b35bProfile] les inclut par défaut, [NoTuningProfile]
@@ -176,5 +188,52 @@ object QwenTuningConstraints {
         - **NEVER add `@MockitoSettings(strictness = Strictness.LENIENT)` on
           the class** to silence ALL unnecessary stubbings globally. That hides
           legitimate test smells.
+
+        # Identity assertions on rebuilt collections (Bug GG)
+        - When the target body REBUILDS its result (`this.list = new ArrayList<>();
+          this.list.addAll(stubbedResult); return this.list;`), the returned
+          collection is a DIFFERENT instance from the one your stub returned.
+          `assertThat(returned).isSameAs(stubbedResult)` compares IDENTITY and
+          FAILS at runtime.
+        - Read the target body: if the returned value goes through `new`,
+          `addAll`, `stream().collect(...)`, `List.copyOf(...)` or any copy,
+          assert CONTENT equality, never identity.
+          EXAMPLE invalid (runtime failure — different instances):
+            when(service.rechercherDeltaVec(criteres)).thenReturn(resultats);
+            List<LigneDTO> returned = sut.rechercher(paginationDTO, tris);
+            assertThat(returned).isSameAs(resultats);
+          EXAMPLE valid:
+            assertThat(returned).containsExactlyElementsOf(resultats);
+            // or: assertThat(returned).isEqualTo(resultats);
+        - `isSameAs` is ONLY correct when the target returns the stubbed
+          reference UNCHANGED (`return this.dependency.compute();` direct
+          pass-through with no copy).
+
+        # MockedStatic default-value trap (Bug HH)
+        - Inside a `try (MockedStatic<X> m = mockStatic(X.class))` block, EVERY
+          static method of X returns the DEFAULT value (false/0/null) unless
+          you stub it explicitly. The real implementation NO LONGER runs.
+          Forgetting one stub silently changes the execution path.
+        - Consequence 1 — only wrap a class in mockStatic when you NEED to
+          control its return value. Pure utility predicates
+          (`CollectionUtils.isNotEmpty`, `StringUtils.isBlank`, `Objects.equals`)
+          are deterministic and side-effect-free: leave them UNMOCKED, the real
+          method works on your test data. CONTEXT lists them separately under
+          "Pure utility statics — do NOT wrap these in mockStatic".
+        - Consequence 2 — if you DO mockStatic a class, trace the target body
+          (and the Internal sub-methods bodies) and stub EVERY method of that
+          class on the execution path.
+          EXAMPLE invalid (UnnecessaryStubbingException at runtime):
+            try (MockedStatic<CollectionUtils> m = mockStatic(CollectionUtils.class)) {
+                // isNotEmpty NOT stubbed → returns false → internal sort is
+                // skipped → the getCleAssociee() stubs are never consumed:
+                when(elementUn.getCleAssociee()).thenReturn("B");
+                sut.rechercherTypeMessage("x");
+            }
+          EXAMPLE valid (real isNotEmpty runs, sort executes, stubs consumed):
+            // no mockStatic(CollectionUtils.class) at all
+            when(elementUn.getCleAssociee()).thenReturn("B");
+            when(elementDeux.getCleAssociee()).thenReturn("A");
+            sut.rechercherTypeMessage("x");
     """.trimIndent()
 }

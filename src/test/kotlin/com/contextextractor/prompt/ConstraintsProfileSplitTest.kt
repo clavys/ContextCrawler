@@ -35,7 +35,7 @@ class ConstraintsProfileSplitTest {
     }
 
     @Test
-    fun `Qwen profile includes Y Z AA DD EE FF tuning sections`() {
+    fun `Qwen profile includes Y Z AA DD EE FF GG tuning sections`() {
         val out = buildPrompt(PromptBuilder.defaultPipeline(Qwen36b35bProfile))
         assertTrue(out.contains("# Checked exceptions on test methods (Bug Y)"),
             "Qwen profile : section Bug Y attendue")
@@ -49,6 +49,10 @@ class ConstraintsProfileSplitTest {
             "Qwen profile : section Bug EE (Astrea R3-C) attendue")
         assertTrue(out.contains("# Avoid unnecessary stubbings (Bug FF — Mockito strict)"),
             "Qwen profile : section Bug FF (Astrea R4-NEW-2) attendue")
+        assertTrue(out.contains("# Identity assertions on rebuilt collections (Bug GG)"),
+            "Qwen profile : section Bug GG (Astrea case 4.1 isSameAs) attendue")
+        assertTrue(out.contains("# MockedStatic default-value trap (Bug HH)"),
+            "Qwen profile : section Bug HH (Astrea case 4.2 mockStatic) attendue")
     }
 
     @Test
@@ -66,6 +70,10 @@ class ConstraintsProfileSplitTest {
             "NoTuning profile : Bug EE NE doit PAS être présent")
         assertFalse(out.contains("# Avoid unnecessary stubbings (Bug FF — Mockito strict)"),
             "NoTuning profile : Bug FF NE doit PAS être présent")
+        assertFalse(out.contains("# Identity assertions on rebuilt collections (Bug GG)"),
+            "NoTuning profile : Bug GG NE doit PAS être présent")
+        assertFalse(out.contains("# MockedStatic default-value trap (Bug HH)"),
+            "NoTuning profile : Bug HH NE doit PAS être présent")
     }
 
     @Test
@@ -118,6 +126,8 @@ class ConstraintsProfileSplitTest {
         assertFalse(BaseConstraints.TEXT.contains("(Bug DD)"))
         assertFalse(BaseConstraints.TEXT.contains("(Bug EE)"))
         assertFalse(BaseConstraints.TEXT.contains("(Bug FF"))
+        assertFalse(BaseConstraints.TEXT.contains("(Bug GG)"))
+        assertFalse(BaseConstraints.TEXT.contains("(Bug HH)"))
     }
 
     // ── V1.4 — mockitoStrictness team policy ────────────────────────────────
@@ -188,7 +198,7 @@ class ConstraintsProfileSplitTest {
     }
 
     @Test
-    fun `QwenTuningConstraints only contains the 6 expected sections`() {
+    fun `QwenTuningConstraints only contains the 8 expected sections`() {
         val text = QwenTuningConstraints.TEXT
         assertTrue(text.contains("(Bug Y)"))
         assertTrue(text.contains("(Bug Z)"))
@@ -196,6 +206,8 @@ class ConstraintsProfileSplitTest {
         assertTrue(text.contains("(Bug DD)"))
         assertTrue(text.contains("(Bug EE)"))
         assertTrue(text.contains("(Bug FF"))
+        assertTrue(text.contains("(Bug GG)"))
+        assertTrue(text.contains("(Bug HH)"))
         // Garde-fou : pas de pollution avec des règles universelles
         // (le test échoue si quelqu'un déplace par erreur du contenu Base).
         assertFalse(text.contains("# Critical rules"))
