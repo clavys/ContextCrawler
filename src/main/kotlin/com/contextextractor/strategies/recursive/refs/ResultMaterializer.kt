@@ -52,7 +52,17 @@ class ResultMaterializer(
         val out = LinkedHashMap<String, MockInfo>()
         graph.allReferences().forEach { ref ->
             if (classifications[ref.fqn] != ExtractionMode.MOCK_EXTERNAL) return@forEach
-            val signatures = ref.resolvedCalledSignatures
+            // V1.4.5 Bug QQ — le retour résolu au call-site (substitution
+            // générique) remplace le retour déclaré dans les signatures à
+            // stubber : c'est lui que javac attend dans `thenReturn(...)`
+            // (Astrea 4.4 : `getSectionPersonne()` déclaré `List<T>` mais vu
+            // `List<Section01Modele>` à travers SaisieMessage01Modele).
+            val signatures = ref.instanceCallSites
+                .mapNotNull { site ->
+                    val sig = site.resolvedMethod ?: return@mapNotNull null
+                    site.call.resolvedReturnType?.let { sig.copy(returnType = it) } ?: sig
+                }
+                .distinctBy { it.canonical() }
             out[ref.fqn] = MockInfo(
                 concreteClass = ref.fqn,
                 declaredType = ref.fqn,
@@ -107,7 +117,8 @@ class ResultMaterializer(
                 builderInfo = phase2.builderInfo,
                 factoryMethods = phase2.factoryMethods,
                 enumValues = phase2.enumValues,
-                sealedSubs = phase2.sealedSubs
+                sealedSubs = phase2.sealedSubs,
+                constructors = phase2.constructors
             )
         }
         return out
@@ -209,7 +220,8 @@ class ResultMaterializer(
         val builderInfo: BuilderInfo? = null,
         val factoryMethods: List<FactoryMethodInfo> = emptyList(),
         val enumValues: List<String> = emptyList(),
-        val sealedSubs: List<String> = emptyList()
+        val sealedSubs: List<String> = emptyList(),
+        val constructors: List<MethodSignature> = emptyList()
     )
 
     private fun capturePhase2(
@@ -227,7 +239,18 @@ class ResultMaterializer(
         ConstructionPattern.BUILDER -> {
             Phase2Result(builderInfo = collectBuilderInfo(descriptor, methods))
         }
-        ConstructionPattern.CONSTRUCTOR -> Phase2Result()
+        ConstructionPattern.CONSTRUCTOR -> {
+            // V1.4.4 Bug LL — §3.4 Phase 2 « capturer paramètres » enfin
+            // réalisé : sans la signature exacte, le LLM construit le DTO en
+            // inventant un ctor « tous-les-champs » depuis la liste Fields
+            // (Astrea 4.4 : `new MemoireSaisieSegment(...)` à 15 args
+            // inexistant). On capture TOUS les ctors publics, du plus complet
+            // au plus court — le LLM choisit.
+            val ctors = methods
+                .filter { it.name == "<init>" && it.visibility == "public" }
+                .sortedByDescending { it.parameters.size }
+            Phase2Result(constructors = ctors)
+        }
         ConstructionPattern.SETTER_BASED -> Phase2Result()
         ConstructionPattern.ENUM -> Phase2Result(enumValues = descriptor.enumValues)
         ConstructionPattern.SEALED -> Phase2Result(sealedSubs = descriptor.permittedSubclasses)

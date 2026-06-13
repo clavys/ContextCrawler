@@ -139,7 +139,10 @@ class DumpSutInternalsAction : AnAction() {
 
             hierarchy.forEachIndexed { i, cls ->
                 appendLine("── [$i] ${cls.fqn} ──")
-                val fields = runCatching { introspector.listFields(cls) }.getOrDefault(emptyList())
+                // V1.4.3 Bug JJ — vue contextuelle : le dump doit montrer les types
+                // de champs APRÈS substitution générique (modele : M → concret),
+                // comme les voit le pipeline.
+                val fields = runCatching { introspector.listFieldsInContext(cls, sut) }.getOrDefault(emptyList())
                 appendLine("  Fields (${fields.size}):")
                 if (fields.isEmpty()) {
                     appendLine("    (none — POTENTIAL ISSUE if class should have fields)")

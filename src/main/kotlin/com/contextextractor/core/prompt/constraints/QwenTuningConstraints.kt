@@ -6,9 +6,26 @@ package com.contextextractor.core.prompt.constraints
 // **Bug Y** — Checked exceptions on test methods. Qwen oublie `throws` sur la
 // signature du test alors que `target()` déclare une checked → compile error.
 //
+// **Bug UU** — thenThrow(checked) sur une méthode qui ne la déclare pas. Astrea
+// 4.1 : `target` déclare `throws AstreaFonctionnelleException` (propagée par une
+// méthode protected non atteignable) ; le LLM fabrique un test d'exception en
+// faisant `thenThrow(new AstreaFonctionnelleException(500))` sur le service
+// `rechercherDeltaVec` — qui NE déclare PAS cette checked → Mockito lève
+// « Checked exception is invalid for this method! » au runtime. Règle : ne
+// stubber une checked QUE sur une méthode dont la signature montre `throws X` ;
+// si aucune ne la déclare, OMETTRE le test d'exception (commentaires interdits).
+//
 // **Bug Z** — Typed Collections in stubs. Qwen écrit
 // `when(...).thenReturn(Collections.emptyMap())` alors que le retour est
 // `Map<String, Foo>` — l'inférence Java échoue.
+//
+// **Bug RR** — Retour à variable de type (`List<E>`). Astrea 4.4 : les
+// getters chaînés des modeles génériques (`section.getListeSegments32()`)
+// retournent `List<E>` ; `when(...).thenReturn(List.of(...))` ne compile pas
+// (`Cannot resolve method 'thenReturn(List<E>)'`, invariance des génériques).
+// La forme `doReturn(...).when(mock).getX()` n'est pas typée au call-site et
+// compile. Le type d'élément se lit dans le SOURCE de la cible, pas dans la
+// liste `# Data structures` (pleine de types homonymes).
 //
 // **Bug AA** — Verifying calls receiving in-body new instances. Qwen écrit
 // `verify(mock).foo(new MyDTO())` qui passe la compile mais fail au runtime
@@ -67,6 +84,35 @@ object QwenTuningConstraints {
         - If MULTIPLE exceptions are declared, list them all comma-separated:
           `throws AstreaFonctionnelleException, OtherException`.
 
+        # Throwing a CHECKED exception from a stub (Bug UU)
+        - Mockito REFUSES `thenThrow(checked)` / `doThrow(checked)` on a method
+          whose own signature does NOT declare that checked exception. It fails
+          at RUNTIME with:
+            org.mockito.exceptions.base.MockitoException:
+            Checked exception is invalid for this method!
+        - The `throws (declared): X` line in CONTEXT is what the TARGET method
+          propagates — it does NOT mean every dependency can throw X. A mocked
+          method may be stubbed to throw X ONLY if its own `Methods to stub on`
+          line shows `throws X` after the return type.
+        - DECISION RULE (apply mechanically) to cover a declared CHECKED exception:
+            1. Find a method under `Methods to stub on` whose signature shows
+               `throws X` (the exact exception). Stub THAT method to throw it:
+                 when(thatMock.thatMethod(...)).thenThrow(new X(...));
+            2. If NO listed stubbable method declares `throws X` (the exception
+               originates from an internal / `protected` / `private` method you
+               cannot reach, or is only propagated), DO NOT write an exception
+               test. Comments are forbidden, so simply OMIT that test method — a
+               failing exception test is worse than an absent one.
+          EXAMPLE invalid (runtime: Checked exception is invalid for this method!):
+            // rechercherDeltaVec(...):java.util.List<...>   ← no `throws` shown
+            when(supervisionDeltaVecService.rechercherDeltaVec(anyMap()))
+                .thenThrow(new AstreaFonctionnelleException(500));
+          EXAMPLE valid (only if a signature shows `throws AstreaFonctionnelleException`):
+            when(someService.someMethod(...))
+                .thenThrow(new AstreaFonctionnelleException(500));
+        - UNCHECKED exceptions (RuntimeException and subclasses) are always
+          allowed via thenThrow/doThrow on ANY mocked method.
+
         # Typed Collections in stubs (Bug Z)
         - `Collections.emptyMap()` / `Collections.emptyList()` return raw
           `Map<K,V>` / `List<E>` — Java's inference often FAILS to match a
@@ -94,6 +140,42 @@ object QwenTuningConstraints {
           EXAMPLE valid (type witness matches CritereDTO exactly):
             Map<String, CritereDTO> criteresRecherche = Collections.<String, CritereDTO>emptyMap();
             when(tableauSupervisionDeltaVecModele.getCriteresRecherche()).thenReturn(criteresRecherche);
+
+        # Type-variable returns — use doReturn, not when().thenReturn (Bug RR)
+        - When the method you stub returns a generic type that still carries a
+          TYPE VARIABLE (`List<E>`, `List<T>`, `Map<K,V>`) — typical of getters
+          on generic legacy model classes reached through a navigation chain —
+          the strict form `when(mock.getX()).thenReturn(value)` does NOT compile.
+          The compiler expects exactly `List<E>`, but `List.of(mock(Foo.class))`
+          is a `List<Foo>`, and generics are invariant. The error reads:
+          `Cannot resolve method 'thenReturn(List<E>)'`.
+        - Use the `doReturn(value).when(mock).getX()` form instead: it is NOT
+          generically type-checked at the call site, so it compiles whatever the
+          declared type variable is. (Needs `import static org.mockito.Mockito.doReturn;`.)
+          EXAMPLE invalid (compile error: thenReturn(List<E>)):
+            when(sectionDemandeExtrait01Modele.getListeSegments32())
+                .thenReturn(List.of(mock(Segment32Message01Modele.class)));
+          EXAMPLE valid:
+            doReturn(List.of(mock(Segment32Message01Modele.class)))
+                .when(sectionDemandeExtrait01Modele).getListeSegments32();
+        - **DECISION RULE (apply mechanically)** — is the getter you are about to
+          stub listed under a `Methods to stub on` block in CONTEXT?
+            * YES  → its return type is shown; `when(...).thenReturn(...)` is fine.
+            * NO   → you reached it by navigating a chain and mocked the
+              intermediate ad-hoc (`mock(SectionDemandeExtrait01Modele.class)`);
+              you CANNOT see its declared return type and it is frequently
+              `List<E>`. ALWAYS use `doReturn(...).when(mock).getter()` here —
+              never `when(...).thenReturn(...)`. This is safe even when the real
+              return is concrete, so when unsure, prefer `doReturn`.
+        - Pick the ELEMENT type from the TARGET source code, never by guessing
+          from the `# Data structures` list (it is full of similarly-named
+          types). In `X x = a.getList().get(i);` the element type is exactly the
+          declared type of `x` — use `mock(X.class)` as the element so the
+          implicit cast the SUT performs on `.get(i)` succeeds at runtime.
+          EXAMPLE — the target body has
+            `Segment32Message01Modele s = this.modele.get...().getListeSegments32().get(i);`
+          so the element is `Segment32Message01Modele`, NOT `Segment32CoordDmdeModele`
+          (a different type that only appears in a sub-method's mapper call).
 
         # Verifying calls that receive in-body `new` instances (Bug AA)
         - When the target body creates an object via `new Type()` and passes

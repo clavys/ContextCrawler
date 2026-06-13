@@ -198,8 +198,21 @@ class MethodScope(
         params.add(Parameter(name, type, annotations))
     }
 
-    fun calls(targetType: String, methodName: String, vararg argTypes: String, isStatic: Boolean = false) {
-        pendingCalls.add(MethodCall(targetType, methodName, argTypes.toList(), isStatic))
+    fun calls(
+        targetType: String,
+        methodName: String,
+        vararg argTypes: String,
+        isStatic: Boolean = false,
+        // V1.4.5 Bug QQ — vue call-site optionnelle (parité JavaPsiIntrospector) :
+        // type statique du receveur (substitué) et retour résolu au call-site.
+        receiverType: String? = null,
+        resolvedReturn: ResolvedType? = null
+    ) {
+        pendingCalls.add(MethodCall(
+            targetType, methodName, argTypes.toList(), isStatic,
+            receiverTypeFqn = receiverType,
+            resolvedReturnType = resolvedReturn
+        ))
     }
 
     fun reads(ownerType: String, fieldName: String) {
@@ -267,9 +280,15 @@ class MethodScope(
         bodyCaught.add(CaughtExceptionRef(types.toList()))
     }
 
-    // Branche conditionnelle — kind ∈ {IF, SWITCH, TERNARY}.
-    fun branch(kind: String, condition: String, constants: List<String> = emptyList()) {
-        bodyBranches.add(ConditionalBranchRef(kind, condition, constants))
+    // Branche conditionnelle — kind ∈ {IF, SWITCH, TERNARY}. `caseLabels` (SWITCH)
+    // simule la résolution PSI des labels de `case` (FQN `Owner.CONSTANT`).
+    fun branch(
+        kind: String,
+        condition: String,
+        constants: List<String> = emptyList(),
+        caseLabels: List<String> = emptyList()
+    ) {
+        bodyBranches.add(ConditionalBranchRef(kind, condition, constants, caseLabels))
     }
 
     fun expectsLambda(functionalType: String) {
@@ -287,7 +306,11 @@ class MethodScope(
         annotations = annotations,
         declaredThrows = declaredThrows,
         visibility = visibility,
-        isStatic = isStatic
+        isStatic = isStatic,
+        // V1.4.3 Bug II — parité avec JavaPsiIntrospector : sans declaredIn,
+        // un override de même forme que la méthode parente partage la même clé
+        // dans bodies/callsByMethod et le fixture mélange les deux corps.
+        declaredIn = ownerFqn
     )
 
     // Persiste les calls/accesses/assignments une fois la signature définitivement

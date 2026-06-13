@@ -52,7 +52,14 @@
       "Bash(xargs grep -l \"failure\\\\|error\")",
       "Bash(awk '{t+=$1; s+=$2; f+=$3; e+=$4} END {print \"Total:\", t, \"tests,\", s, \"skipped,\", f, \"failures,\", e, \"errors\"}')",
       "PowerShell(.\\\\gradlew.bat test --console=plain -q)",
-      "PowerShell(\\(Get-Content VALIDATION_DEFECTS.md | Measure-Object -Line\\).Lines)"
+      "PowerShell(\\(Get-Content VALIDATION_DEFECTS.md | Measure-Object -Line\\).Lines)",
+      "PowerShell(./gradlew compileKotlin compileTestKotlin --console=plain -q)",
+      "PowerShell(./gradlew test --console=plain 2>&1 | Select-Object -Last 60)",
+      "PowerShell(\\(Get-Content \"VALIDATION_DEFECTS.md\" | Measure-Object -Line\\).Lines)",
+      "PowerShell(.\\\\gradlew.bat compileKotlin compileTestKotlin --console=plain -q)",
+      "PowerShell(.\\\\gradlew.bat instrumentTestCode --console=plain --stacktrace 2>&1 | Select-Object -Last 60)",
+      "PowerShell(.\\\\gradlew test --tests \"com.contextextractor.prompt.ContextRenderStageTest\" --tests \"com.contextextractor.prompt.ConstraintsYZAATest\" --tests \"com.contextextractor.prompt.TypeVarStubSignatureTest\" --tests \"com.contextextractor.strategy.AstreaRound44FixesTest\" --tests \"com.contextextractor.strategy.ParamConstructibilityTTTest\" --rerun-tasks --console=plain 2>&1 | Select-Object -Last 60)",
+      "PowerShell(.\\\\gradlew test --rerun-tasks --console=plain 2>&1 | Select-Object -Last 25)"
     ]
   }
 }

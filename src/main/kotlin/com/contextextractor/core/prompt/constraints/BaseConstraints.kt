@@ -107,6 +107,15 @@ object BaseConstraints {
           import `fr.gouv.justice.idt.dto.MyService` — that's a hallucination.
         - When in doubt, locate the type's `##` header in CONTEXT and copy its
           full path character-by-character.
+        - SIBLING SUB-PACKAGE TRAP — two types with similar names often live in
+          DIFFERENT sub-packages. Do NOT infer one type's package from another's.
+          EXAMPLE: CONTEXT lists
+            `## fr.x.modele.section.segment.Segment30IdtPpModele`
+            `## fr.x.modele.section.segment.message01.Segment32Message01Modele`
+          The second is under `...segment.message01`, NOT `...segment`. Importing
+          `fr.x.modele.section.segment.Segment32Message01Modele` (dropping
+          `.message01` by analogy with Segment30) does not compile. Copy each
+          import from its OWN `##` header.
 
         # Required static imports (strict — non-compilable otherwise)
         - For EVERY Mockito static method you use, add the matching `import static`.
@@ -118,6 +127,7 @@ object BaseConstraints {
             * `doThrow(...)`     → `import static org.mockito.Mockito.doThrow;`
             * `doNothing()`      → `import static org.mockito.Mockito.doNothing;`
             * `spy(...)`         → `import static org.mockito.Mockito.spy;`
+            * `lenient()`        → `import static org.mockito.Mockito.lenient;`
             * `mock(...)`        → `import static org.mockito.Mockito.mock;`
             * `eq(...)`          → `import static org.mockito.ArgumentMatchers.eq;`
             * `any(...)`         → `import static org.mockito.ArgumentMatchers.any;`
@@ -148,6 +158,17 @@ object BaseConstraints {
               directly in `when(...).thenReturn(pageDataDTO)`.
         - NO invocation of method signatures NOT listed in CONTEXT
         - NO real network/database/filesystem access
+        - NEVER call `when(...)`, `verify(...)` or `doReturn(...).when(...)` on
+          an instance created with `new` (V1.4.5) — Mockito can only stub
+          @Mock / mock(...) / spy(...) instances; stubbing a real object throws
+          MissingMethodInvocationException at runtime. If you constructed an
+          object from `# Data structures to construct`, give it its values
+          through the CONSTRUCTOR arguments or its setters instead.
+            * INVALID (runtime failure — real object, not a mock):
+                MemoireSaisieSegment memo = new MemoireSaisieSegment(30, null, null, 1, 1, 1);
+                when(memo.getNumeroOrdreGr()).thenReturn(30);
+            * VALID (pick the constructor/setters that set the needed fields):
+                MemoireSaisieSegment memo = new MemoireSaisieSegment(0, null, null, 1, 1, 1, 30);
 
         # Initialization protocol
         - The init protocol described in CONTEXT is PRESCRIPTIVE

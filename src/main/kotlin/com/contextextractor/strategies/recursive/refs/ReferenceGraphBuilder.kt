@@ -49,7 +49,13 @@ import com.contextextractor.core.model.refs.VisitedMethod
 class ReferenceGraphBuilder(
     private val introspector: CodeIntrospector,
     private val frameworkPrefixes: List<String> = emptyList(),
-    private val maxCrawlDepth: Int = 8
+    private val maxCrawlDepth: Int = 8,
+    // V1.4.3 Bug KK — profondeur max de la descente dans les champs des DTOs
+    // (BFS 3). depth 0 = types du flux de données de la cible ; chaque niveau
+    // de champ imbriqué ajoute 1. Au-delà, les types restent référencés (et
+    // matérialisés avec leurs champs) mais leurs propres champs ne génèrent
+    // plus de nouvelles entrées — Bug DD prescrit déjà `mock(T.class)` ad hoc.
+    private val maxDtoFieldDepth: Int = 2
 ) {
 
     fun build(
@@ -62,8 +68,8 @@ class ReferenceGraphBuilder(
 
         // SEED 1 — champs de la SUT et héritage. On enregistre AsFieldOfSut pour
         // chaque type de champ. Les champs sans accès depuis target/init seront
-        // filtrés en PASSE 2 (essential vs non), pas ici.
-        seedSutFields(ctx, hierarchy)
+        // filtrés en aval (relevance filter V1.4.3 dans RecursiveDeepStrategy).
+        seedSutFields(ctx, hierarchy, sut)
 
         // SEED 2 — paramètres + return type de target. Surface du test.
         seedTargetSignature(ctx, targetMethod)
@@ -113,10 +119,16 @@ class ReferenceGraphBuilder(
 
     // ── Phases de seed ───────────────────────────────────────────────────────
 
-    private fun seedSutFields(ctx: BuildContext, hierarchy: List<HierarchyLevel>) {
+    private fun seedSutFields(
+        ctx: BuildContext,
+        hierarchy: List<HierarchyLevel>,
+        sut: ClassDescriptor
+    ) {
         hierarchy.forEach { level ->
             val cls = introspector.resolveClass(level.classFqn) ?: return@forEach
-            introspector.listFields(cls).forEach { field ->
+            // V1.4.3 Bug JJ — vue contextuelle : `modele : M` est enregistré
+            // sous sa liaison concrète, cohérente avec BLOC 3 côté stratégie.
+            introspector.listFieldsInContext(cls, sut).forEach { field ->
                 ctx.register(field.type.fqName, UsageSite.AsFieldOfSut(field))
                 // Type-args du type du champ → ajoutés comme `AsTypeArgOfReference`
                 field.type.typeArgs.forEach { arg ->
@@ -130,12 +142,26 @@ class ReferenceGraphBuilder(
         targetMethod.parameters.forEach { p ->
             ctx.register(p.type.fqName, UsageSite.AsParamOfTarget(p))
             p.type.typeArgs.forEach { arg ->
-                ctx.register(arg.fqName, UsageSite.AsTypeArgOfReference(p.type.fqName))
+                // V1.4.4 Bug OO — un type-arg d'un paramètre de target est SUR
+                // LA SURFACE du test : le test doit le CONSTRUIRE pour appeler
+                // target (`List<TriDTO>` → TriDTO). L'enregistrer en simple
+                // AsTypeArgOfReference (usage faible) le privait de la descente
+                // DTO bornée V1.4.3 → régression Astrea 4.1 : TriDTO non crawlé
+                // → `OrdreTriEnum [ENUM]` absent du prompt → le LLM hallucine
+                // la constante `ASC` (le bug R3-A exact que DTO_ENUM_VALUES
+                // avait été créé pour empêcher).
+                ctx.register(arg.fqName, UsageSite.AsParamOfTarget(p))
             }
         }
         ctx.register(targetMethod.returnType.fqName, UsageSite.AsReturnTypeOfTarget(asGenericArg = false))
         targetMethod.returnType.typeArgs.forEach { arg ->
             ctx.register(arg.fqName, UsageSite.AsReturnTypeOfTarget(asGenericArg = true))
+        }
+        // V1.4.4 Bug OO — exceptions déclarées par target : matérialisées comme
+        // dataStructures (avec signature de ctor — Bug LL) pour que le test
+        // puisse écrire `thenThrow(new X(...))` sans inventer le constructeur.
+        targetMethod.declaredThrows.forEach { thrown ->
+            ctx.register(thrown, UsageSite.AsDeclaredThrowOfTarget)
         }
     }
 
@@ -208,7 +234,12 @@ class ReferenceGraphBuilder(
                 // Bug N préservé — détection transitive : si la méthode appelée
                 // descend dans un préfixe framework, on l'enregistre comme
                 // stubViaSpy SANS visiter son corps. Vérification au call site.
-                val frameworkHits = detectFrameworkBoundary(calledMethod, ctx.hierarchyFqns)
+                // V1.4.4 Bug NN — exception : une méthode PRIVÉE n'est pas
+                // stubable via spy ; on la visite normalement (ses appels
+                // framework seront classés SYSTEM_IGNORE, sans danger).
+                val frameworkHits =
+                    if (calledMethod.visibility == "private") emptyList()
+                    else detectFrameworkBoundary(calledMethod, ctx.hierarchyFqns)
                 if (frameworkHits.isNotEmpty()) {
                     ctx.visitedInternalMethods.add(VisitedMethod(
                         ownerFqn = call.targetType,
@@ -221,8 +252,20 @@ class ReferenceGraphBuilder(
                 ctx.methodQueue.add(MethodToVisit(calledMethod, call.targetType, depth + 1))
             } else {
                 // Appel externe — registre la classe comme appelée d'instance.
+                //
+                // V1.4.5 Bug QQ — attribution au RECEVEUR concret plutôt qu'à la
+                // classe déclarante. Sur une hiérarchie de modeles génériques
+                // (Astrea 4.4), `this.modele.getX()` se résout sur
+                // AbstractSaisieMessageModele et `this.modele.getY()` sur
+                // SaisieMessage01Modele → le prompt prescrivait DEUX mocks pour
+                // UN objet runtime, avec les stubs dispersés. En attribuant au
+                // type statique du receveur (substitué : SaisieMessage01Modele),
+                // tous les stubs convergent sur le mock réellement injecté.
+                val mockOwnerFqn = call.receiverTypeFqn
+                    ?.takeIf { it.contains('.') && it !in ctx.hierarchyFqns }
+                    ?: call.targetType
                 ctx.register(
-                    call.targetType,
+                    mockOwnerFqn,
                     UsageSite.AsCallTarget(
                         call = call,
                         resolvedMethod = calledMethod,
@@ -233,7 +276,7 @@ class ReferenceGraphBuilder(
                 // Arguments de l'appel — chaque type d'arg devient une
                 // référence (le test devra construire/mocker l'arg).
                 call.argTypes.forEach { argType ->
-                    ctx.register(argType, UsageSite.AsTypeArgOfReference(call.targetType))
+                    ctx.register(argType, UsageSite.AsTypeArgOfReference(mockOwnerFqn))
                 }
             }
         }
@@ -268,6 +311,14 @@ class ReferenceGraphBuilder(
         val updated = ctx.visitedInternalMethods.map { vm ->
             // Déjà marqué framework boundary → ne pas re-traiter.
             if (vm.isFrameworkBoundary) return@map vm
+
+            // V1.4.4 Bug NN — Mockito ne peut PAS stubber une méthode PRIVÉE
+            // via spy (`doReturn(...).when(sut).methodePrivee(...)` ne compile
+            // pas). Prescrire le pattern spy sur une privée = erreur de compile
+            // garantie (Astrea 4.4 : `gererPreRequisChampHeureAudience` private
+            // → « has private access »). On la laisse en internal logic
+            // informationnelle.
+            if (vm.signature.visibility == "private") return@map vm
 
             val rtFqn = vm.signature.returnType.fqName
             // Void / primitives / system → skip.
@@ -309,11 +360,16 @@ class ReferenceGraphBuilder(
         snapshot.values.forEach { ref ->
             ref.instanceCallSites.forEach { site ->
                 val sig = site.resolvedMethod ?: return@forEach
+                // V1.4.5 Bug QQ — le retour résolu AU CALL-SITE (substitution
+                // générique faite par PSI) prime sur le retour déclaré : il
+                // porte les types concrets que le test devra construire
+                // (`List<Section01Modele>` au lieu de `List<T>` ou raw List).
+                val returnType = site.call.resolvedReturnType ?: sig.returnType
                 ctx.register(
-                    sig.returnType.fqName,
+                    returnType.fqName,
                     UsageSite.AsStubReturn(mockOwnerFqn = ref.fqn, mockMethod = sig)
                 )
-                sig.returnType.typeArgs.forEach { arg ->
+                returnType.typeArgs.forEach { arg ->
                     ctx.register(
                         arg.fqName,
                         UsageSite.AsStubReturn(mockOwnerFqn = ref.fqn, mockMethod = sig)
@@ -326,60 +382,113 @@ class ReferenceGraphBuilder(
     // ── Propagation : fields des classes data-shaped (heuristique légère) ────
 
     private fun propagateDataStructureFields(ctx: BuildContext) {
-        // On itère jusqu'à point fixe pour gérer les DTOs imbriqués —
-        // ex: Order → Customer → Address. Garde-fou maxIterations contre
-        // les références circulaires (ne devrait pas arriver avec
-        // ctx.visitedDtoForFields mais paranoia).
-        var iterations = 0
-        val maxIterations = 10
-        while (iterations < maxIterations) {
-            val before = ctx.size()
-            val snapshot = ctx.snapshot()
-            snapshot.values.forEach { ref ->
-                if (ref.fqn in ctx.visitedDtoForFields) return@forEach
-                val descriptor = ref.descriptor ?: return@forEach
-                // Heuristique : "data-shaped" = pas d'appel d'instance dessus
-                // ET pas dans la hiérarchie SUT ET résolu.
-                if (ref.isCalledAsInstance) return@forEach
-                if (ref.fqn in ctx.hierarchyFqns) return@forEach
-                if (ref.fqn.startsWith("java.") || ref.fqn.startsWith("javax.") ||
-                    ref.fqn.startsWith("jakarta.") || ref.fqn.startsWith("kotlin.")) return@forEach
-                // §3.4 V1.1 préservé : ENUM ne déclenche PAS de Phase 4 — les
-                // constantes sont des valeurs, pas des types à crawler.
-                if (descriptor.isEnum) {
-                    ctx.visitedDtoForFields.add(ref.fqn)
-                    return@forEach
+        // V1.4.3 Bug KK — réécriture de l'ancien point fixe (quasi illimité :
+        // 10 itérations ≈ 10 niveaux d'imbrication). Vu en prod Astrea
+        // case 4.4 : 125 champs hérités non utilisés + graphe d'entités JPA
+        // interconnecté → 260 dataStructures, prompt ingérable pour le LLM.
+        //
+        // Deux gardes :
+        //   (1) PERTINENCE — la descente part UNIQUEMENT des types présents
+        //       dans le flux de données de la cible (usage fort : param/retour
+        //       de target, appel, static, instanciation, stub return). Un type
+        //       dont le seul lien est d'être déclaré comme champ de la
+        //       hiérarchie (AsFieldOfSut pur) ne tire plus son graphe de
+        //       champs transitifs dans le prompt.
+        //   (2) PROFONDEUR — bornée par maxDtoFieldDepth. Les types atteints
+        //       à la limite restent référencés et matérialisés avec leurs
+        //       champs (capturePhase3), mais ne génèrent plus d'entrées pour
+        //       leurs propres champs.
+        val depths = mutableMapOf<String, Int>()
+        val queue = ArrayDeque<String>()
+        ctx.snapshot().values.forEach { ref ->
+            if (ref.usages.any { it.isStrongUsage() }) {
+                depths[ref.fqn] = 0
+                queue.add(ref.fqn)
+            }
+        }
+        var depthTruncated = false
+        while (queue.isNotEmpty()) {
+            val fqn = queue.removeFirst()
+            if (fqn in ctx.visitedDtoForFields) continue
+            val depth = depths.getValue(fqn)
+            val ref = ctx.snapshot()[fqn] ?: continue
+            val descriptor = ref.descriptor ?: continue
+            // Heuristique : "data-shaped" = pas d'appel d'instance dessus
+            // ET pas dans la hiérarchie SUT ET résolu.
+            if (ref.isCalledAsInstance) continue
+            if (fqn in ctx.hierarchyFqns) continue
+            if (fqn.startsWith("java.") || fqn.startsWith("javax.") ||
+                fqn.startsWith("jakarta.") || fqn.startsWith("kotlin.")) continue
+            // §3.4 V1.1 préservé : ENUM ne déclenche PAS de Phase 4 — les
+            // constantes sont des valeurs, pas des types à crawler.
+            if (descriptor.isEnum) {
+                ctx.visitedDtoForFields.add(fqn)
+                continue
+            }
+            if (depth >= maxDtoFieldDepth) {
+                depthTruncated = true
+                continue
+            }
+            // SEALED : Phase 4 sur les sous-classes permises (pas sur
+            // listFields qui pourrait contenir des champs hérités sans
+            // intérêt). Reste fidèle au §3.4 V1.1.
+            if (descriptor.isSealed) {
+                ctx.visitedDtoForFields.add(fqn)
+                descriptor.permittedSubclasses.forEach { subFqn ->
+                    ctx.register(subFqn,
+                        UsageSite.AsFieldOfReferencedClass(fqn, "<sealed-sub>"))
+                    enqueueChild(subFqn, depth + 1, depths, queue)
                 }
-                // SEALED : Phase 4 sur les sous-classes permises (pas sur
-                // listFields qui pourrait contenir des champs hérités sans
-                // intérêt). Reste fidèle au §3.4 V1.1.
-                if (descriptor.isSealed) {
-                    ctx.visitedDtoForFields.add(ref.fqn)
-                    descriptor.permittedSubclasses.forEach { subFqn ->
-                        ctx.register(subFqn,
-                            UsageSite.AsFieldOfReferencedClass(ref.fqn, "<sealed-sub>"))
-                    }
-                    return@forEach
-                }
-                // RECORD traité comme classe ordinaire : ses composants sont
-                // accessibles via listFields et doivent être explorés normalement.
-                ctx.visitedDtoForFields.add(ref.fqn)
-                introspector.listFields(descriptor).forEach { f ->
-                    ctx.register(
-                        f.type.fqName,
-                        UsageSite.AsFieldOfReferencedClass(ref.fqn, f.name)
-                    )
-                    f.type.typeArgs.forEach { arg ->
-                        ctx.register(arg.fqName, UsageSite.AsTypeArgOfReference(f.type.fqName))
-                    }
+                continue
+            }
+            // RECORD traité comme classe ordinaire : ses composants sont
+            // accessibles via listFields et doivent être explorés normalement.
+            ctx.visitedDtoForFields.add(fqn)
+            introspector.listFields(descriptor).forEach { f ->
+                ctx.register(
+                    f.type.fqName,
+                    UsageSite.AsFieldOfReferencedClass(fqn, f.name)
+                )
+                enqueueChild(f.type.fqName, depth + 1, depths, queue)
+                f.type.typeArgs.forEach { arg ->
+                    ctx.register(arg.fqName, UsageSite.AsTypeArgOfReference(f.type.fqName))
+                    enqueueChild(arg.fqName, depth + 1, depths, queue)
                 }
             }
-            if (ctx.size() == before) break
-            iterations++
         }
-        if (iterations >= maxIterations) {
-            ctx.truncationReasons += "DTO field propagation hit max iterations ($maxIterations)"
+        if (depthTruncated) {
+            ctx.truncationReasons += "DTO field propagation depth-capped at $maxDtoFieldDepth"
         }
+    }
+
+    private fun enqueueChild(
+        fqn: String,
+        depth: Int,
+        depths: MutableMap<String, Int>,
+        queue: ArrayDeque<String>
+    ) {
+        val known = depths[fqn]
+        if (known != null && known <= depth) return
+        depths[fqn] = depth
+        queue.add(fqn)
+    }
+
+    // V1.4.3 Bug KK — un usage est « fort » quand il place le type dans le
+    // flux de données du test : la cible le reçoit, le retourne, l'appelle,
+    // l'instancie, ou il revient d'un stub. AsFieldOfSut (champ déclaré mais
+    // pas forcément touché) et les liens dérivés (type-arg, champ d'un autre
+    // DTO) ne suffisent pas à justifier une descente.
+    private fun UsageSite.isStrongUsage(): Boolean = when (this) {
+        is UsageSite.AsParamOfTarget,
+        is UsageSite.AsReturnTypeOfTarget,
+        is UsageSite.AsDeclaredThrowOfTarget,
+        is UsageSite.AsCallTarget,
+        is UsageSite.AsStaticCallTarget,
+        is UsageSite.AsInstantiationInBody,
+        is UsageSite.AsStubReturn -> true
+        is UsageSite.AsFieldOfSut,
+        is UsageSite.AsFieldOfReferencedClass,
+        is UsageSite.AsTypeArgOfReference -> false
     }
 
     // ── Helpers locaux ────────────────────────────────────────────────────────

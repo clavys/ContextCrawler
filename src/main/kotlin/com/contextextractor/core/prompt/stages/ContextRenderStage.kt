@@ -220,7 +220,9 @@ class ContextRenderStage : PromptStage {
         when (kind) {
             "SETTER" -> {
                 val method = field.metadata[MetaKeys.INIT_METHOD_NAME].orEmpty()
-                sb.appendLine("$sutVarName.$method(mockOf$type);")
+                // V1.4.3 — nom simple dans le placeholder : avec un FQN substitué
+                // (Bug JJ), `mockOf$type` produirait `mockOffr.gouv...` illisible.
+                sb.appendLine("$sutVarName.$method(mockOf${type.substringAfterLast('.')});")
             }
             "CALL_POST_CONSTRUCT" -> {
                 val method = field.metadata[MetaKeys.INIT_METHOD_NAME].orEmpty()
@@ -521,9 +523,20 @@ class ContextRenderStage : PromptStage {
                     else "doReturn(mock(${returnType.substringAfterLast('.')}.class))"
                 }
             }
+            // Bug VV (V1.4.8) — le stub spy est rendu dans @BeforeEach mais n'est
+            // consommé QUE sur les branches qui atteignent cette frontière framework.
+            // Sur une cible multi-branches (Astrea 4.4 : switch 6 cas + default,
+            // seul SEGMENT_30 appelle getSegment30SelonRangRelatif), Mockito strict
+            // lève UnnecessaryStubbingException en @AfterEach sur les 6 autres tests.
+            // `lenient()` neutralise la vérification de consommation sans masquer
+            // d'échec réel (la valeur stubée reste correcte si la méthode EST appelée).
             sb.appendLine("  $sutVarName = spy($sutVarName);")
-            sb.appendLine("  $doExpr.when($sutVarName).$methodName($anyExpr);")
+            sb.appendLine("  lenient().$doExpr.when($sutVarName).$methodName($anyExpr);")
             sb.appendLine("  ```")
+            sb.appendLine("- `lenient()` is REQUIRED here: this stub is consumed only on the")
+            sb.appendLine("  branch(es) that reach this framework boundary. Without it, Mockito")
+            sb.appendLine("  strict mode throws UnnecessaryStubbingException in @AfterEach on")
+            sb.appendLine("  every test that covers a different branch.")
             sb.appendLine("- Do NOT explore the body — closed test boundary.")
         }
         sb.appendLine()
@@ -544,6 +557,17 @@ class ContextRenderStage : PromptStage {
             // `ASCENDANT`). N'est rendu que pour les nœuds de pattern ENUM.
             val enumValues = dto.metadata[MetaKeys.DTO_ENUM_VALUES].orEmpty()
             if (enumValues.isNotEmpty()) sb.appendLine("Values: $enumValues")
+            // V1.4.4 Bug LL — signatures exactes des ctors publics. Sans elles,
+            // le LLM construit le DTO en inventant un ctor « tous-les-champs »
+            // depuis Fields (Astrea 4.4 : MemoireSaisieSegment à 15 args).
+            val ctors = dto.metadata[MetaKeys.DTO_CONSTRUCTORS].orEmpty()
+            if (ctors.isNotEmpty()) {
+                val simpleName = dto.title.substringAfterLast('.')
+                sb.appendLine("Available public constructors — use EXACTLY one of these, do NOT invent arguments:")
+                ctors.split('\n').forEach { sig ->
+                    sb.appendLine("- new $simpleName$sig")
+                }
+            }
         }
         sb.appendLine()
     }

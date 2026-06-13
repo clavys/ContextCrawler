@@ -163,6 +163,29 @@ class DefaultContextAwareClassifier : ContextAwareClassifier {
             if (descriptor.annotations.any { it in LOMBOK_DATA_ANNOTATIONS }) {
                 return ExtractionMode.DATA_STRUCTURE
             }
+
+            // Règle 10bis (V1.4.7, Bug TT) — PARAMÈTRE de target lu via des getters
+            // qui ne sont PAS adressables par la construction → MOCK_EXTERNAL.
+            //
+            // Astrea 4.4 : `MemoireSaisieSegment` est un param dont le body lit
+            // `getNumeroOrdreGr()` / `getRangRelatif*()` (discriminant du switch +
+            // indices). Il n'a qu'un ctor à 7 args aux noms ABRÉGÉS (`numOrdreGr`,
+            // `rgRelatifSection`…) qui ne correspondent pas aux getters, et pas de
+            // setter pour ces champs. Le LLM ne peut donc pas mapper la valeur
+            // voulue à la construction : il construit PUIS stubbe l'objet réel
+            // (`when(memo.getNumeroOrdreGr())`) → MissingMethodInvocationException.
+            // En le mockant, le LLM stubbe chaque getter discriminant proprement.
+            //
+            // Discrimination vs case92/93 `OrderRequest` (param, getId/getRawAmount
+            // lus) : son ctor `(id, rawAmount)` mappe par NOM aux getters → il reste
+            // constructible → DATA_STRUCTURE (le LLM le `new` sans stubber). La règle
+            // ne fire QUE quand AU MOINS un getter lu n'a ni param de ctor ni setter
+            // de même nom normalisé. Enum/Sealed/Record/Lombok (R9/R10) priment.
+            if (ref.isParamOfTarget &&
+                ref.isCalledAsInstance &&
+                hasUnconstructibleReadGetter(ref, descriptorMethods)) {
+                return ExtractionMode.MOCK_EXTERNAL
+            }
         }
 
         // Règle 11 — vide (anciennement `isInstantiatedInBody`, déplacé en R7bis
@@ -246,6 +269,45 @@ class DefaultContextAwareClassifier : ContextAwareClassifier {
     // par get/is/equals/hashCode/toString). Sinon, tous les appels sont des
     // getters purs → on laisse fall-through pour permettre le classement DTO
     // (cas concret : entity.getId() lu par target → on construit l'entity).
+    // V1.4.7 Bug TT — vrai s'il existe AU MOINS un getter pur lu sur ce type
+    // dont la propriété (nom normalisé) n'est ni un paramètre de ctor public ni
+    // un setter. Un tel getter ne peut pas être renseigné par la construction →
+    // le test devra stubber, donc le type doit être mockable.
+    //
+    // Conservateur : si `descriptorMethods` est vide (type non résolu, pas
+    // d'info), retourne false → on laisse le comportement legacy (DATA_STRUCTURE
+    // par défaut), pas de bascule MOCK aveugle.
+    private fun hasUnconstructibleReadGetter(
+        ref: ClassReference,
+        descriptorMethods: List<MethodSignature>
+    ): Boolean {
+        if (descriptorMethods.isEmpty()) return false
+
+        // Propriétés renseignables : params de ctor public + setters, nom normalisé.
+        val settable = buildSet {
+            descriptorMethods
+                .filter { it.name == "<init>" && it.visibility == "public" }
+                .flatMap { it.parameters }
+                .forEach { add(it.name.lowercase()) }
+            descriptorMethods
+                .filter { it.name.startsWith("set") && it.parameters.size == 1 }
+                .forEach { add(it.name.removePrefix("set").lowercase()) }
+        }
+        if (settable.isEmpty()) return false
+
+        return ref.instanceCallSites.any { site ->
+            val name = site.call.methodName
+            val isPureGetter = site.call.argTypes.isEmpty() &&
+                (name.startsWith("get") || name.startsWith("is"))
+            if (!isPureGetter) return@any false
+            val prop = when {
+                name.startsWith("get") -> name.removePrefix("get")
+                else -> name.removePrefix("is")
+            }.lowercase()
+            prop.isNotEmpty() && prop !in settable
+        }
+    }
+
     private fun hasMutatorOrBusinessCall(ref: ClassReference): Boolean {
         return ref.instanceCallSites.any { site ->
             val name = site.call.methodName

@@ -37,6 +37,18 @@ interface CodeIntrospector {
     // (STRATEGIE.md §3.1 BLOC 1 « Champs de la SUT et héritage »).
     fun listFields(cls: ClassDescriptor): List<ClassField>
 
+    // V1.4.3 Bug JJ — variante contextuelle de listFields : les variables de
+    // type génériques d'un champ hérité sont substituées par leur liaison
+    // concrète vue depuis `viewedFrom` (la SUT). Ex Astrea case 4.4 :
+    // `modele : M` déclaré dans `AbstractSaisieMessageControleur<M>` devient
+    // `modele : SaisieMessage01Modele` vu depuis `SaisieMessage01Controleur`.
+    // Sans cette substitution, le protocole d'init rend `setModele(mockOfM)`
+    // et le LLM devine un type (le bound) qui ne compile pas.
+    // Implémentation par défaut : identique à listFields — les fakes ne
+    // modélisent pas les génériques.
+    fun listFieldsInContext(cls: ClassDescriptor, viewedFrom: ClassDescriptor): List<ClassField> =
+        listFields(cls)
+
     // Méthodes déclarées directement sur cette classe, constructeurs inclus
     // (par convention name = "<init>" pour les constructeurs, returnType = la
     // classe elle-même). Requis par STRATEGIE.md §3.1 BLOCs 4-5 (choix du

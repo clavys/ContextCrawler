@@ -68,7 +68,11 @@ data class CaughtException(
 data class ConditionalBranch(
     val kind: String,
     val condition: String,
-    val constants: List<String> = emptyList()
+    val constants: List<String> = emptyList(),
+    // SWITCH : labels de `case` (FQN résolu quand champ statique). Permettent au
+    // LLM de viser chaque branche en référençant la constante au lieu de deviner
+    // sa valeur littérale.
+    val caseLabels: List<String> = emptyList()
 )
 
 data class TargetMethodAnalysis(
@@ -187,7 +191,11 @@ data class DataStructureInfo(
     val builderInfo: BuilderInfo? = null,
     val factoryMethods: List<FactoryMethodInfo> = emptyList(),
     val enumValues: List<String> = emptyList(),
-    val sealedSubs: List<String> = emptyList()
+    val sealedSubs: List<String> = emptyList(),
+    // V1.4.4 Bug LL — signatures des constructeurs publics (pattern CONSTRUCTOR,
+    // §3.4 Phase 2 « capturer paramètres »). Sans elles, le LLM invente un ctor
+    // « tous-les-champs » (Astrea 4.4 : MemoireSaisieSegment à 15 args).
+    val constructors: List<MethodSignature> = emptyList()
 )
 
 data class StaticCallInfo(

@@ -35,8 +35,16 @@ data class CaughtExceptionRef(
 // Branche conditionnelle — `kind` ∈ {IF, SWITCH, TERNARY}. `condition` est le
 // texte source de la condition ; `constants` les littéraux qui y apparaissent
 // (utiles au LLM pour choisir les valeurs du chemin nominal).
+//
+// `caseLabels` (SWITCH uniquement) : la liste des labels de `case` du switch,
+// résolus en FQN (`Owner.CONSTANT`) quand le label est un champ statique. Sans
+// eux, le LLM ne connaît pas les valeurs qui font entrer dans chaque branche et
+// devine des littéraux (30, 31…) qui ne correspondent pas aux constantes — tout
+// tombe dans `default` (cf Astrea 4.4 `getMethodeControle`, switch sur
+// `NumerosOrdreMessage01Constantes.SEGMENT_*`).
 data class ConditionalBranchRef(
     val kind: String,
     val condition: String,
-    val constants: List<String> = emptyList()
+    val constants: List<String> = emptyList(),
+    val caseLabels: List<String> = emptyList()
 )

@@ -31,6 +31,7 @@ import com.contextextractor.core.model.ThrownException
 import com.contextextractor.core.model.init.InitStrategy
 import com.contextextractor.core.model.init.MethodKey
 import com.contextextractor.core.model.init.POST_CONSTRUCT_FQNS
+import com.contextextractor.core.model.refs.UsageSite
 import com.contextextractor.core.strategy.Budget
 import com.contextextractor.core.strategy.ContextStrategy
 import com.contextextractor.core.strategy.StrategyConfig
@@ -110,11 +111,11 @@ class RecursiveDeepStrategy : ContextStrategy {
         val directFieldAccesses = introspector.listFieldAccesses(targetMethod)
             .map { it.fieldName }.toSet()
         val trivialGetterFieldNames = resolveTrivialGetterFieldNames(
-            introspector, hierarchyFqns, targetCalls
+            introspector, hierarchyFqns, targetCalls, sut
         )
         val allHierarchyFieldNames: Set<String> = hierarchy.flatMap { level ->
             val cls = introspector.resolveClass(level.classFqn) ?: return@flatMap emptyList()
-            introspector.listFields(cls).map { it.name }
+            introspector.listFieldsInContext(cls, sut).map { it.name }
         }.toSet()
         val bodyMentionedFieldNames: Set<String> = allHierarchyFieldNames.filter { name ->
             val esc = Regex.escape(name)
@@ -122,7 +123,7 @@ class RecursiveDeepStrategy : ContextStrategy {
                 Regex("(?<!\\w)$esc\\s*\\.").containsMatchIn(targetBody)
         }.toSet()
         val activeFields = directFieldAccesses + trivialGetterFieldNames + bodyMentionedFieldNames
-        val usefulFields = collectUsefulFields(introspector, hierarchy, activeFields)
+        val usefulFields = collectUsefulFields(introspector, hierarchy, activeFields, sut)
 
         // ── BLOC 4 : PROTOCOLE DE CONSTRUCTION DU SUT ─────────────────────────
         val selectedConstructor = chooseConstructor(introspector, sut)
@@ -236,12 +237,34 @@ class RecursiveDeepStrategy : ContextStrategy {
             else filteredFields.any { it.type.fqName == typeFqn }
         }
 
+        // ── V1.4.3 Bug KK — filtre de pertinence « champ déclaré uniquement » ─
+        // Une référence dont le SEUL lien avec la cible est AsFieldOfSut (jamais
+        // appelée, pas sur la surface de target, pas stub return, pas instanciée)
+        // n'appartient pas au flux de données du test. Les règles 12/13 du
+        // classifier la promeuvent pourtant MOCK (interface/Spring) et la règle
+        // 16 en fait un DTO par défaut — vu en prod Astrea case 4.4 : 31 mocks
+        // dont ~20 fantômes et 260 dataStructures sur une hiérarchie à 170
+        // champs. On ne garde ces réfs que si leur champ a survécu au filtre
+        // d'usage transitif (cas légitime : repo @Autowired consommé par le
+        // protocole d'init — case 9.1 DiscountRepository).
+        val fieldOnlyFqns = graph.allReferences()
+            .filter { ref -> ref.usages.isNotEmpty() && ref.usages.all { it is UsageSite.AsFieldOfSut } }
+            .map { it.fqn }
+            .toSet()
+        val keptFieldTypeFqns = filteredFields.map { it.type.fqName }.toSet()
+        val mocksAfterRelevance = mocksAfterFieldFilter.filterKeys { fqn ->
+            fqn !in fieldOnlyFqns || fqn in keptFieldTypeFqns
+        }
+        val dataStructuresAfterRelevance = rawDataStructures.filterKeys { fqn ->
+            fqn !in fieldOnlyFqns || fqn in keptFieldTypeFqns
+        }
+
         // ── Réconciliation BLOC 7 ↔ mocks ─────────────────────────────────────
         // Si BLOC 7 dit qu'un champ s'auto-construit via CALL_PUBLIC_*, le type
         // du champ ne doit plus apparaître dans `mocks` — prompt non
         // contradictoire.
         val reconciledMocks = reconcileMocksWithInitProtocol(
-            mocksAfterFieldFilter, filteredInitProtocol, filteredFields
+            mocksAfterRelevance, filteredInitProtocol, filteredFields
         )
 
         // ── Enrichissement internalLogics avec downstream BLOC 7 ──────────────
@@ -265,7 +288,7 @@ class RecursiveDeepStrategy : ContextStrategy {
             targetMethod = targetAnalysis,
             internalLogics = enrichedInternalLogics,
             mocks = reconciledMocks,
-            dataStructures = rawDataStructures,
+            dataStructures = dataStructuresAfterRelevance,
             staticCalls = staticCalls,
             initProtocol = filteredInitProtocol,
             initOrder = filteredInitOrder,
@@ -279,7 +302,17 @@ class RecursiveDeepStrategy : ContextStrategy {
     // Réconciliation BLOC 6 ↔ BLOC 7 sur les mocks. Pour chaque type T présent
     // dans `mocks` qui correspond au type d'au moins un champ de la SUT, T est
     // conservé UNIQUEMENT s'il existe au moins un champ de type T dont la
-    // stratégie d'init est MOCKITO_INJECT_MOCKS. Sinon T est supprimé.
+    // stratégie d'init INJECTE UN MOCK : MOCKITO_INJECT_MOCKS (injection par
+    // champ) ou SETTER (V1.4.4 Bug MM — le protocole prescrit
+    // `setX(mockOfX)` : la valeur injectée EST un mock, ses stubs doivent
+    // rester dans le prompt). Pour les stratégies auto-constructives
+    // (CALL_PUBLIC_*, CALL_POST_CONSTRUCT…), T est supprimé — le code de prod
+    // construit la vraie valeur, un @Mock serait contradictoire.
+    //
+    // Vu en prod Astrea 4.4 : `modele` en CALL_PUBLIC_WITH_ARGS → le mock
+    // SaisieMessage01Modele (et ses stubs getListeSectionsDemandeExtraitModele…)
+    // était supprimé → le LLM construisait un vrai modele avec des setters
+    // inventés.
     private fun reconcileMocksWithInitProtocol(
         rawMocks: Map<String, MockInfo>,
         initProtocol: Map<String, FieldInitProtocol>,
@@ -289,7 +322,8 @@ class RecursiveDeepStrategy : ContextStrategy {
         return rawMocks.filterKeys { typeFqn ->
             val fieldsOfThisType = fieldsByType[typeFqn] ?: return@filterKeys true
             fieldsOfThisType.any { field ->
-                initProtocol[field.name]?.recommendedStrategy is InitStrategy.MOCKITO_INJECT_MOCKS
+                val strategy = initProtocol[field.name]?.recommendedStrategy
+                strategy is InitStrategy.MOCKITO_INJECT_MOCKS || strategy is InitStrategy.SETTER
             }
         }
     }
@@ -501,7 +535,7 @@ class RecursiveDeepStrategy : ContextStrategy {
             thrownExceptions = bodyAnalysis.thrownAsModel(),
             caughtExceptions = bodyAnalysis.caughtAsModel(),
             conditionalBranches = bodyAnalysis.conditionalBranches.map {
-                ConditionalBranch(it.kind, it.condition, it.constants)
+                ConditionalBranch(it.kind, it.condition, it.constants, it.caseLabels)
             },
             nonDeterministicSources = bodyAnalysis.nonDeterministicSources,
             body = body
@@ -521,12 +555,15 @@ class RecursiveDeepStrategy : ContextStrategy {
     private fun collectUsefulFields(
         introspector: CodeIntrospector,
         hierarchy: List<HierarchyLevel>,
-        activeFields: Set<String>
+        activeFields: Set<String>,
+        sut: ClassDescriptor
     ): List<ClassField> {
         val collected = mutableListOf<ClassField>()
         hierarchy.forEach { level ->
             val cls = introspector.resolveClass(level.classFqn) ?: return@forEach
-            introspector.listFields(cls).forEach { f ->
+            // V1.4.3 Bug JJ — vue contextuelle : un champ générique hérité
+            // (`modele : M`) est remonté avec sa liaison concrète vue de la SUT.
+            introspector.listFieldsInContext(cls, sut).forEach { f ->
                 val accessed = f.name in activeFields
                 val injected = f.annotations.any { it in springInjectAnnotations }
                 if (accessed || injected) collected += f
@@ -724,10 +761,11 @@ class RecursiveDeepStrategy : ContextStrategy {
     private fun resolveTrivialGetterFieldNames(
         introspector: CodeIntrospector,
         hierarchyFqns: Set<String>,
-        calls: List<MethodCall>
+        calls: List<MethodCall>,
+        sut: ClassDescriptor
     ): Set<String> {
         val out = mutableSetOf<String>()
-        forEachTrivialGetterField(introspector, hierarchyFqns, calls) { fieldName, _ ->
+        forEachTrivialGetterField(introspector, hierarchyFqns, calls, sut) { fieldName, _ ->
             out += fieldName
         }
         return out
@@ -737,12 +775,13 @@ class RecursiveDeepStrategy : ContextStrategy {
         introspector: CodeIntrospector,
         hierarchyFqns: Set<String>,
         calls: List<MethodCall>,
+        sut: ClassDescriptor,
         accept: (String, ClassField) -> Unit
     ) {
         val fieldsByName: Map<String, ClassField> = hierarchyFqns
             .asSequence()
             .mapNotNull { introspector.resolveClass(it) }
-            .flatMap { introspector.listFields(it).asSequence() }
+            .flatMap { introspector.listFieldsInContext(it, sut).asSequence() }
             .associateBy { it.name }
         calls.forEach { call ->
             if (call.isStatic) return@forEach

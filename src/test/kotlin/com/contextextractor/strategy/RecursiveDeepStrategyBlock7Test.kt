@@ -248,9 +248,14 @@ class RecursiveDeepStrategyBlock7Test {
     }
 
     @Test
-    fun `reconciliation — type removed if all fields of that type are non-MOCKITO`() {
-        // Symétrique du test précédent : DEUX champs de type Helper, AUCUN
-        // n'est MOCKITO → Helper retiré du mocks map.
+    fun `reconciliation V144 — SETTER strategy keeps the mock (the setter injects it)`() {
+        // V1.4.4 Bug MM — INVERSION du verrou historique « tout non-MOCKITO est
+        // retiré ». Le protocole SETTER rend `setHelperA(mockOfHelper)` : la
+        // valeur injectée EST un mock, donc le type et ses stubs doivent rester
+        // dans `# Mocks`. L'ancienne sémantique produisait un prompt
+        // contradictoire (vu en prod Astrea 4.4 : mock SaisieMessage01Modele
+        // supprimé alors que le protocole demandait de l'injecter → le LLM
+        // construisait un vrai modele avec des setters inventés).
         val pkg = "com.test.allnonmockito"
         val fake = fixture {
             klass("$pkg.Helper") {
@@ -279,12 +284,51 @@ class RecursiveDeepStrategyBlock7Test {
         val target = fake.listMethodsOf("$pkg.SUT").single { it.name == "calculate" }
         val result = strategy.extractCore(fake, DefaultClassifier(), StrategyConfig(), sut, target)
 
-        // Les deux champs ont stratégie SETTER → Helper retiré.
         val helperAStrat = result.initProtocol["helperA"]?.recommendedStrategy
         val helperBStrat = result.initProtocol["helperB"]?.recommendedStrategy
         assertTrue(helperAStrat is InitStrategy.SETTER, "helperA → SETTER (était: $helperAStrat)")
         assertTrue(helperBStrat is InitStrategy.SETTER, "helperB → SETTER (était: $helperBStrat)")
-        assertFalse("$pkg.Helper" in result.mocks.keys,
-            "Helper doit être retiré : aucun champ de ce type n'est MOCKITO_INJECT_MOCKS")
+        assertTrue("$pkg.Helper" in result.mocks.keys,
+            "V1.4.4 Bug MM : Helper doit RESTER — le protocole SETTER injecte un " +
+                "mock (`setHelperA(mockOfHelper)`), ses stubs doivent être dans le prompt")
+    }
+
+    @Test
+    fun `reconciliation V144 — auto-constructive strategy still removes the mock`() {
+        // Verrou négatif : un champ initialisé par une méthode publique avec
+        // args (le code de prod CONSTRUIT la vraie valeur) ne doit toujours
+        // PAS garder son mock — un @Mock serait contradictoire avec l'init.
+        val pkg = "com.test.autoconstruct"
+        val fake = fixture {
+            klass("$pkg.Engine") {
+                method("run", returns = T("int"))
+            }
+            klass("$pkg.Config") {
+                method("getSize", returns = T("int"))
+            }
+            klass("$pkg.SUT2") {
+                field("engine", T("$pkg.Engine"))
+                method("initEngine", visibility = "public",
+                    body = "this.engine = build(config.getSize());") {
+                    param("config", T("$pkg.Config"))
+                    calls("$pkg.Config", "getSize")
+                    assigns("$pkg.SUT2", "engine", rhsExpression = "build(config.getSize())")
+                }
+                method("calculate", returns = T("int"),
+                    body = "return engine.run();") {
+                    reads("$pkg.SUT2", "engine")
+                    calls("$pkg.Engine", "run")
+                }
+            }
+        }
+        val sut = fake.resolveClass("$pkg.SUT2")!!
+        val target = fake.listMethodsOf("$pkg.SUT2").single { it.name == "calculate" }
+        val result = strategy.extractCore(fake, DefaultClassifier(), StrategyConfig(), sut, target)
+
+        val strat = result.initProtocol["engine"]?.recommendedStrategy
+        assertTrue(strat is InitStrategy.CALL_PUBLIC_WITH_ARGS,
+            "engine doit être initialisé par initEngine (était: $strat)")
+        assertFalse("$pkg.Engine" in result.mocks.keys,
+            "Engine ne doit PAS être mocké : initEngine construit la vraie valeur")
     }
 }

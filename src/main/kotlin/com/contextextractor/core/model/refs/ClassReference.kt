@@ -55,6 +55,13 @@ data class ClassReference(
                 it is UsageSite.AsReturnTypeOfTarget
         }
 
+    // Apparaît comme PARAMÈTRE de target (pas seulement retour). Le test fournit
+    // ce type en entrée — soit il le construit, soit il le mocke. V1.4.7 : le
+    // classifier distingue « param constructible de façon fiable » (DATA_STRUCTURE)
+    // de « param dont les getters lus ne mappent pas à la construction » (MOCK).
+    val isParamOfTarget: Boolean
+        get() = usages.any { it is UsageSite.AsParamOfTarget }
+
     // `new Type(...)` détecté quelque part dans le code visité. Le type doit
     // donc rester instanciable côté prod — pas de mock substituable.
     val isInstantiatedInBody: Boolean

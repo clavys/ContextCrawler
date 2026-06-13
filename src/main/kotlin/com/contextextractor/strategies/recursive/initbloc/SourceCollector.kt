@@ -79,7 +79,16 @@ class SourceCollector(
         val derivedFieldName = decapitalize(m.name.removePrefix("set"))
         if (derivedFieldName != field.name) return null
         val param = m.parameters.single()
-        if (param.type.fqName != field.type.fqName) return null
+        // V1.4.4 Bug MM — tolérance variable de type : un setter générique
+        // hérité (`setModele(M modele)` sur AbstractSaisieMessageControleur<M>)
+        // porte un param NON substitué alors que le champ l'est (Bug JJ :
+        // `modele : SaisieMessage01Modele`). Le nom dérivé matche déjà ; si le
+        // FQN du param est une variable de type nue (pas de package), c'est le
+        // même setter vu côté déclaration générique → accepté. Sans ça, le
+        // champ tombait en branche 6 CALL_PUBLIC_WITH_ARGS et la réconciliation
+        // supprimait le mock du modele avec tous ses stubs (Astrea 4.4).
+        val paramFqn = param.type.fqName
+        if (paramFqn != field.type.fqName && paramFqn.contains('.')) return null
         return InitSource.Setter(methodName = m.name, parameterType = param.type)
     }
 

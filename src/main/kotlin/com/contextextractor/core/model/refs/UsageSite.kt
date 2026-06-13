@@ -41,6 +41,13 @@ sealed class UsageSite {
     // `asGenericArg = true`). Le test assertera sur cette valeur.
     data class AsReturnTypeOfTarget(val asGenericArg: Boolean = false) : UsageSite()
 
+    // V1.4.4 Bug OO — exception déclarée (`throws`) par la méthode cible.
+    // Le test doit pouvoir la CONSTRUIRE (`when(...).thenThrow(new X(...))`)
+    // pour couvrir la branche d'exception — sans sa signature de constructeur
+    // dans le prompt, le LLM invente un ctor (régression Astrea 4.1 :
+    // `new AstreaFonctionnelleException(String)` inexistant).
+    object AsDeclaredThrowOfTarget : UsageSite()
+
     // ── Catégorie 3 : usage dans le code (corps d'une méthode) ───────────────
 
     // Une méthode (target ou interne intra-SUT) appelle une méthode d'INSTANCE

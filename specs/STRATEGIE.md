@@ -318,7 +318,16 @@ Recurse(SUT, methodeCible, visites, resultat, SUT_BOOTSTRAP, budget, profondeur)
       BranchesCond.ajouter({
         type      : nœud.kind,
         condition : nœud.condition.toSource(),
-        constantesUtilisees : extraireLitteraux(nœud.condition)
+        constantesUtilisees : extraireLitteraux(nœud.condition),
+        // SWITCH uniquement — labels de chaque `case` (V1.4.6, Bug SS). Résolus
+        // en FQN `Owner.CONSTANT` quand le label est un champ statique / enum,
+        // sinon texte brut (littéral). SANS eux, le LLM ne connaît pas les
+        // valeurs qui font entrer dans chaque branche et devine des littéraux
+        // (30, 31…) qui ne valent pas les constantes → tout tombe dans `default`
+        // (Astrea 4.4 : switch sur `NumerosOrdreMessage01Constantes.SEGMENT_*`,
+        // 6 branches jamais atteintes). Rendus dans # Target method avec la
+        // consigne de référencer la constante au lieu de deviner sa valeur.
+        casLabels : (nœud.kind == SWITCH) ? labelsDeCase(nœud).map(résoudreEnFqn) : []
       })
       ConstantesCmp.ajouterTout(extraireLitteraux(nœud.condition))
 
@@ -491,6 +500,14 @@ Pour chaque appel directement contenu dans Methode :
     fin de l'analyse
 ```
 
+**Garde-fou V1.4.4 (Bug NN)** — une méthode **PRIVÉE** n'est JAMAIS promue
+`STUB_VIA_SPY` (ni par la détection framework, ni par la promotion
+return-chained Bug #C) : Mockito ne peut pas stubber une méthode privée via
+spy — `doReturn(...).when(sut).methodePrivee(...)` ne compile pas (vu en prod
+Astrea 4.4 : `gererPreRequisChampHeureAudience` → « has private access »).
+Elle reste une `INTERNAL_LOGIC` informationnelle : son corps est exploré
+normalement (ses éventuels appels framework sont classés SYSTEM_IGNORE).
+
 `FRAMEWORK_PREFIXES` (V1, hard-codés, configurables YAML en V1.1) :
 - `javax.faces.`, `jakarta.faces.`
 - `org.primefaces.`
@@ -600,8 +617,13 @@ Recurse(ClasseDonnee, _, visites, resultat, DATA_STRUCTURE, budget, profondeur)
   Selon Pattern :
     RECORD          : capturer composants (nom, type résolu, annotations validation)
     BUILDER         : capturer toutes les méthodes du Builder (nom, champ, type, obligatoire)
-    CONSTRUCTOR     : choisir constructeur (@JsonCreator > tous-args > plus complet),
-                      capturer paramètres (nom via @JsonProperty si présent)
+    CONSTRUCTOR     : capturer la signature de TOUS les ctors publics, du plus
+                      complet au plus court (réalisé V1.4.4 Bug LL — sans la
+                      signature exacte dans le prompt, le LLM invente un ctor
+                      « tous-les-champs » depuis Fields : Astrea 4.4,
+                      MemoireSaisieSegment à 15 args inexistant ; le rendu §6
+                      les liste sous « Available public constructors — use
+                      EXACTLY one of these »)
     SETTER_BASED    : confirmer no-arg constructor, capturer tous les setters
     ENUM            : capturer toutes les constantes
     SEALED          : capturer sous-classes permises ; récurer DATA_STRUCTURE sur chacune
@@ -625,6 +647,42 @@ Recurse(ClasseDonnee, _, visites, resultat, DATA_STRUCTURE, budget, profondeur)
         Si Classifier(arg, GENERIC_ARG) == DATA_STRUCTURE :
           Recurse(arg, null, visites, resultat, DATA_STRUCTURE, ...)
 ```
+
+**V1.4.3 Bug KK — pertinence et profondeur de la Phase 4 (vu en prod Astrea
+case 4.4 : 260 dataStructures, 31 mocks dont ~20 fantômes sur une hiérarchie
+à ~170 champs ; prompt ingérable → hallucinations LLM par saturation).**
+
+La récursion Phase 4 (côté V1.2 : `propagateDataStructureFields` en PASSE 1)
+obéit à deux gardes :
+
+1. **Pertinence (KK-1)** — la descente ne part QUE des types à usage FORT,
+   c'est-à-dire présents dans le flux de données de la cible : paramètre ou
+   retour de `methodeCible` **y compris leurs type-args** (`List<TriDTO>` →
+   TriDTO), **exceptions déclarées (`throws`) de la cible** (V1.4.4 Bug OO —
+   le test doit pouvoir les construire pour `thenThrow`), cible d'appel
+   (instance ou statique), instanciation dans un corps visité, type de retour
+   d'un stub. Un type dont le seul lien est d'être déclaré comme champ de la
+   hiérarchie (`AsFieldOfSut` pur) ne déclenche JAMAIS de descente dans ses
+   champs.
+
+   ⚠️ Leçon V1.4.4 (régression Astrea 4.1) : la première version de KK-1
+   avait laissé les type-args des PARAMÈTRES de la cible en usage faible —
+   `TriDTO` n'était plus crawlé, son champ `OrdreTriEnum [ENUM]` disparaissait
+   du prompt et le LLM hallucinait la constante `ASC` (résurrection du bug
+   R3-A). Tout resserrage de périmètre doit lister les consommateurs du
+   périmètre précédent AVANT de couper, et les verrouiller par des tests.
+2. **Profondeur (KK-2)** — la descente est bornée par `maxDtoFieldDepth`
+   (défaut 2 ; depth 0 = type à usage fort). Un type atteint à la limite reste
+   référencé et matérialisé avec la liste de ses champs (Phase 3), mais ses
+   champs ne génèrent plus d'entrées dédiées — la contrainte Bug DD prescrit
+   déjà au LLM `mock(T.class)` ad hoc pour les types non détaillés. La coupure
+   est tracée dans `truncationReasons`.
+
+En aval (PASSE 3 → assemblage), une référence « champ déclaré uniquement »
+(`AsFieldOfSut` pur, jamais appelée, hors surface de target) n'est matérialisée
+ni en mock ni en dataStructure, SAUF si son champ a survécu au filtre d'usage
+transitif — cas légitime : repo `@Autowired` consommé par le protocole d'init
+(§9.1, `DiscountRepository`). C'est le filtre **KK-3**.
 
 ### 3.5 Résolution des génériques
 
@@ -652,6 +710,45 @@ fonction resoudreType(typePsi) → TypeResolu
 
   retourner TypeResolu(typePsi.canonicalText, [])
 ```
+
+**V1.4.5 Bug QQ — vue CALL-SITE : attribution au receveur concret + retour
+résolu (vu en prod Astrea case 4.4, 3e re-run).** `MethodCall.targetType` est
+la classe DÉCLARANTE de la méthode résolue ; sur une hiérarchie de modeles
+génériques, les appels d'un MÊME receveur se dispersent
+(`this.modele.getSectionPersonne()` → AbstractSaisieMessageModele,
+`this.modele.getListeSections...()` → SaisieMessage01Modele) → le prompt
+prescrivait DEUX mocks pour UN objet runtime, et les retours déclarés
+(raw `List` / `List<T>`) faisaient deviner les types d'éléments au LLM
+(génériques invariants → 4 erreurs de compile). Règles :
+
+1. `MethodCall` porte la vue call-site : `receiverTypeFqn` (type statique du
+   receveur, substitué — PSI : `methodExpression.qualifierExpression.type`)
+   et `resolvedReturnType` (PSI : `expression.type`).
+2. P1 attribue l'`AsCallTarget` au **receveur** (s'il est résolu, qualifié
+   et hors hiérarchie SUT), pas à la classe déclarante → tous les stubs d'un
+   même objet convergent sur UN mock.
+3. Les signatures à stubber et `propagateStubReturns` utilisent le retour
+   résolu — c'est lui que javac attend dans `thenReturn(...)` et lui qui
+   porte les types concrets à matérialiser.
+
+**V1.4.3 Bug JJ — réalisation de `remonterBindingViaHeritage` pour les champs
+hérités (vu en prod Astrea case 4.4).** Le champ `modele : M` déclaré dans
+`AbstractSaisieMessageControleur<M>` était remonté tel quel : le protocole
+d'init rendait `## Field \`modele\`: M` + `setModele(mockOfM)` et le LLM
+devinait le bound (`AbstractSaisieMessageModele`) — qui ne compile pas, le
+setter attendant la liaison concrète (`SaisieMessage01Modele`).
+
+1. **Port** : `CodeIntrospector.listFieldsInContext(cls, viewedFrom)` —
+   variante contextuelle de `listFields` ; implémentation PSI via
+   `TypeConversionUtil.getSuperClassSubstitutor(declaring, derived, EMPTY)`
+   puis `substitutor.substitute(field.type)`. Tous les parcours de hiérarchie
+   (seed P1, BLOC 1/3, dump) passent par cette variante avec la SUT comme
+   `viewedFrom`.
+2. **Rendu** : si malgré tout une variable de type nue (FQN sans package :
+   `T`, `M`, `E`…) survit dans les type-args d'une signature à stubber, le
+   rendu retombe sur le raw type (`java.util.List` au lieu de
+   `java.util.List<T>`) — Bug Z ordonne au LLM la copie caractère par
+   caractère, `List<T>` serait donc un stub non compilable garanti.
 
 ### 3.6 Choix du constructeur du SUT
 
@@ -715,6 +812,22 @@ Aucun chemin valide             ───────►  UNTESTABLE_AS_IS(raiso
 | **POST_CONSTRUCT** | Méthode annotée `@PostConstruct` qui assigne le champ |
 | **METHOD_INITIALIZER** | Toute autre méthode assignant `this.champ = ...` |
 | **INITIALIZER_BLOCK** | Bloc `{ this.x = ...; }` ou `static { ... }` |
+
+> **Compatibilité SETTER (amendée V1.4.4 Bug MM)** : « param compatible » =
+> FQN du param identique au FQN du champ, **OU** param dont le FQN est une
+> variable de type nue (sans package). Cas concret : le champ hérité est
+> remonté SUBSTITUÉ par Bug JJ (`modele : SaisieMessage01Modele`) mais le
+> setter générique reste déclaré `setModele(M modele)` — c'est le même setter
+> vu côté déclaration. Sans cette tolérance, le champ tombait en branche 6
+> `CALL_PUBLIC_WITH_ARGS` et la réconciliation §6 supprimait le mock du modele
+> avec tous ses stubs (Astrea 4.4).
+>
+> **Réconciliation mocks ↔ protocole (amendée V1.4.4 Bug MM)** : un type de
+> champ est conservé dans `# Mocks` si au moins un champ de ce type a la
+> stratégie `MOCKITO_INJECT_MOCKS` **ou `SETTER`** — le protocole SETTER rend
+> `setX(mockOfX)`, la valeur injectée EST un mock, ses stubs doivent rester.
+> Les stratégies auto-constructives (`CALL_PUBLIC_*`, `CALL_POST_CONSTRUCT`…)
+> continuent de retirer le mock (le code de prod construit la vraie valeur).
 
 > Pas de stratégie reflection. Si aucune des sources ci-dessus ne donne un chemin légitime, on retourne `UNTESTABLE_AS_IS`.
 >
@@ -1509,12 +1622,21 @@ nécessaire — le verrou « base ne contient pas de Bug X » est testé par
 - **Lombok** : si le plugin Lombok IntelliJ est actif, les méthodes générées apparaissent comme `LightMethod` dans PSI standard.
 - **Generics non résolus** : `PsiTypeParameter` → remonter via `PsiClassType.getSubstitutor()`.
 - **Performance** : tout appel PSI doit être fait dans une `ReadAction`. `ProgressManager.checkCanceled()` régulièrement pour les graphes profonds.
+- **V1.4.3 Bug II — overrides et clés de cache** : un override et la méthode
+  parente de même forme (même nom, mêmes paramètres, même retour) produisent
+  des signatures IDENTIQUES si la clé n'inclut pas la classe déclarante. Toute
+  map indexée par cette clé écrase une entrée par l'autre — le pipeline
+  introspecte alors le MAUVAIS corps (vu en prod Astrea case 4.4 :
+  `SaisieMessage01Controleur#getMethodeControle` crawlé sur le corps de
+  `AbstractSaisieMessageControleurPP`, les 5 autres branches du switch jamais
+  vues → hallucinations LLM induites). Règle : `MethodSignature.declaredIn`
+  (FQN de la classe déclarante) fait partie de l'identité de la signature.
 
 ### 7.3 Cache
 
 ```text
 cacheClasses     : Map<String, PsiClass>
-cacheMethodes    : Map<MethodSignatureKey, PsiMethod>
+cacheMethodes    : Map<MethodSignatureKey, PsiMethod>   // ⚠ la clé DOIT inclure la classe déclarante (Bug II §7.2)
 cacheCallGraph   : Map<PsiClass, Map<PsiMethod, Set<PsiMethod>>>   // calculé une fois par SUT
 cacheResultat    : Map<(sutFqName, methodeSig), ContexteResultat>  // invalidé via PsiModificationTracker
 ```

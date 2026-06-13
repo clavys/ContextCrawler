@@ -242,6 +242,13 @@ class ContextRenderStageTest {
             "méthode `getPageInfo` doit apparaître comme stub via spy")
         assertTrue(output.contains("doReturn(mock(PageInfo.class))"),
             "pattern `doReturn(mock(PageInfo.class))` attendu pour éviter NPE chained")
+        // Bug VV (V1.4.8) — le stub spy doit être `lenient()` : il n'est consommé
+        // que sur les branches atteignant la frontière framework. Sans lenient,
+        // mode strict → UnnecessaryStubbingException sur les autres tests (Astrea
+        // 4.4 : 6/7 tests rouges sur un switch). Verrou de présence du préfixe.
+        assertTrue(output.contains("lenient().doReturn(mock(PageInfo.class))"),
+            "le stub spy doit être préfixé par lenient() — sinon strict mode lève " +
+                "UnnecessaryStubbingException sur toute branche ne l'appelant pas")
     }
 
     @Test
@@ -356,5 +363,69 @@ class ContextRenderStageTest {
             "com.testproject.case91.OrderService", "calculate")
         assertFalse(output.contains("# Inherited fields requiring @Mock by name"),
             "case91 a un repository déclaré dans la SUT → pas de section Inherited")
+    }
+
+    // ── Bug UU (V1.4.8) — throws rendu sur les signatures à stubber ──────────
+
+    @Test
+    fun `Bug UU — declared throws is rendered on the Methods to stub on line`() {
+        // Astrea 4.1 — Mockito interdit `thenThrow(checked)` sur une méthode qui
+        // ne déclare pas la checked. Le LLM ne peut décider quelle méthode peut
+        // légalement la lever que si le prompt expose la clause `throws` de
+        // chaque méthode stubable. Verrou : une méthode mockée déclarant
+        // `throws X` doit rendre ` throws X` à la fin de sa ligne.
+        val pkg = "com.test.uu"
+        val fake = fixture {
+            klass("$pkg.Service",
+                annotations = listOf("org.springframework.stereotype.Service")) {
+                method("doWork", returns = T("java.lang.String"),
+                    declaredThrows = listOf("$pkg.MyCheckedException"))
+            }
+            klass("$pkg.Ctrl",
+                annotations = listOf("org.springframework.stereotype.Service")) {
+                field("service", T("$pkg.Service"),
+                    annotations = listOf("org.springframework.beans.factory.annotation.Autowired"))
+                method("target", returns = T("void"),
+                    body = "this.service.doWork();") {
+                    reads("$pkg.Ctrl", "service")
+                    calls("$pkg.Service", "doWork")
+                }
+            }
+        }
+        val output = render(fake, "$pkg.Ctrl", "target")
+        assertTrue(
+            output.contains("doWork():java.lang.String throws $pkg.MyCheckedException"),
+            "la clause throws déclarée doit être rendue sur la ligne `Methods to " +
+                "stub on` (Bug UU) — sinon le LLM ne sait pas quelle méthode peut " +
+                "thenThrow la checked.\nRendu :\n" +
+                output.substringAfter("Methods to stub on", "<ABSENT>").take(300))
+    }
+
+    @Test
+    fun `Bug UU non-regression — method without throws renders no throws suffix`() {
+        // Non-régression précise : la MÊME forme sans declaredThrows ne doit
+        // RIEN suffixer (le rendu legacy `name(params):returnType` reste intact).
+        val pkg = "com.test.uunothrow"
+        val fake = fixture {
+            klass("$pkg.Service",
+                annotations = listOf("org.springframework.stereotype.Service")) {
+                method("doWork", returns = T("java.lang.String"))
+            }
+            klass("$pkg.Ctrl",
+                annotations = listOf("org.springframework.stereotype.Service")) {
+                field("service", T("$pkg.Service"),
+                    annotations = listOf("org.springframework.beans.factory.annotation.Autowired"))
+                method("target", returns = T("void"),
+                    body = "this.service.doWork();") {
+                    reads("$pkg.Ctrl", "service")
+                    calls("$pkg.Service", "doWork")
+                }
+            }
+        }
+        val output = render(fake, "$pkg.Ctrl", "target")
+        assertTrue(output.contains("doWork():java.lang.String"),
+            "la signature de base doit rester rendue")
+        assertFalse(output.contains("doWork():java.lang.String throws"),
+            "une méthode sans declaredThrows ne doit recevoir AUCUN suffixe ` throws `")
     }
 }

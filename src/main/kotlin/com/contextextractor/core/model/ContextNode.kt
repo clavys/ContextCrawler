@@ -69,6 +69,11 @@ object MetaKeys {
     // alors que l'enum a en réalité `ASCENDANT`). Présent uniquement sur les
     // nœuds DATA_STRUCTURE de pattern ENUM.
     const val DTO_ENUM_VALUES = "dtoEnumValues"           // 'A, B, C' séparés par ', '
+    // V1.4.4 Bug LL — signatures des ctors publics d'un DTO [CONSTRUCTOR],
+    // une par ligne au format '(type1 nom1, type2 nom2)'. Sans elles le LLM
+    // invente un ctor « tous-les-champs » depuis Fields (Astrea 4.4 :
+    // `new MemoireSaisieSegment(...)` à 15 args inexistant).
+    const val DTO_CONSTRUCTORS = "dtoConstructors"        // '(params)' séparés par '\n'
 
     // Méthode cible / interne : signature complète canonique.
     const val METHOD_CANONICAL = "methodCanonical"

@@ -4,6 +4,7 @@ import com.contextextractor.core.extractor.ClassField
 import com.contextextractor.core.extractor.MethodSignature
 import com.contextextractor.core.model.BasicContextNode
 import com.contextextractor.core.model.CaughtException
+import com.contextextractor.core.model.ConditionalBranch
 import com.contextextractor.core.model.ContextNode
 import com.contextextractor.core.model.ContextResult
 import com.contextextractor.core.model.ContextTree
@@ -126,7 +127,7 @@ class ContextResultTreeMapper {
         }
         if (tm.conditionalBranches.isNotEmpty()) {
             out[MetaKeys.METHOD_BRANCHES] =
-                tm.conditionalBranches.joinToString("\n") { "${it.kind}: ${it.condition}" }
+                tm.conditionalBranches.joinToString("\n") { branchLabel(it) }
         }
         if (tm.nonDeterministicSources.isNotEmpty()) {
             out[MetaKeys.METHOD_NON_DETERMINISTIC] = tm.nonDeterministicSources.joinToString(", ")
@@ -152,6 +153,20 @@ class ContextResultTreeMapper {
 
     // Libellé d'un bloc catch — multi-catch joint par ' | '.
     private fun caughtLabel(c: CaughtException): String = c.types.joinToString(" | ")
+
+    // Libellé d'une branche. Pour un SWITCH avec labels de `case` connus, on
+    // énumère les labels (FQN résolu) et on dit explicitement au LLM de viser
+    // chaque branche en passant la constante au discriminant — sans ça il devine
+    // un littéral qui ne matche aucune constante et tout tombe dans `default`
+    // (Astrea 4.4). IF / TERNARY (et SWITCH sans labels) gardent l'ancien format.
+    private fun branchLabel(b: ConditionalBranch): String {
+        val base = "${b.kind}: ${b.condition}"
+        if (b.caseLabels.isEmpty()) return base
+        return base + " — to cover each path, set the discriminant equal to one of " +
+            "these case labels (reference the constant directly, do NOT guess its " +
+            "literal value): " + b.caseLabels.joinToString(" | ") +
+            " (plus the `default` path with a value matching none of them)"
+    }
 
     // ── HIERARCHY ────────────────────────────────────────────────────────────
 
@@ -402,6 +417,15 @@ class ContextResultTreeMapper {
                     if (dto.enumValues.isNotEmpty()) {
                         put(MetaKeys.DTO_ENUM_VALUES, dto.enumValues.joinToString(", "))
                     }
+                    // V1.4.4 Bug LL — signatures exactes des ctors publics pour
+                    // le pattern CONSTRUCTOR (une par ligne).
+                    if (dto.constructors.isNotEmpty()) {
+                        put(MetaKeys.DTO_CONSTRUCTORS, dto.constructors.joinToString("\n") { ctor ->
+                            "(${ctor.parameters.joinToString(", ") { p ->
+                                "${renderType(p.type)} ${p.name}"
+                            }})"
+                        })
+                    }
                 }
             )
         }
@@ -426,7 +450,15 @@ class ContextResultTreeMapper {
 
     private fun signatureToOneLine(sig: MethodSignature): String {
         val params = sig.parameters.joinToString(",") { renderType(it.type) }
-        return "${sig.name}($params):${renderType(sig.returnType)}"
+        val base = "${sig.name}($params):${renderType(sig.returnType)}"
+        // Bug UU (V1.4.8) — rendre la clause `throws` déclarée. Mockito INTERDIT
+        // `thenThrow`/`doThrow` d'une checked exception sur une méthode qui ne la
+        // déclare pas (« Checked exception is invalid for this method! » au runtime,
+        // Astrea 4.1 : le LLM faisait `thenThrow(new AstreaFonctionnelleException)`
+        // sur `rechercherDeltaVec` qui ne la déclare pas). Exposer le `throws`
+        // permet au LLM de cibler une méthode déclarante, ou de s'abstenir.
+        if (sig.declaredThrows.isEmpty()) return base
+        return "$base throws ${sig.declaredThrows.joinToString(", ")}"
     }
 
     // Bug W — rendu complet avec génériques. Sans cette fonction, un mock
@@ -436,6 +468,12 @@ class ContextResultTreeMapper {
     // contre la vraie signature `Map<String, CritereDTO>`.
     private fun renderType(type: com.contextextractor.core.extractor.ResolvedType): String {
         if (type.typeArgs.isEmpty()) return type.fqName
+        // V1.4.3 Bug JJ — une variable de type non résolue (T, M, E… : FQN sans
+        // package) dans les args génériques rendrait `java.util.List<T>` ; or
+        // Bug Z ordonne au LLM de copier les type-args caractère par caractère
+        // → stub non compilable (vu en prod Astrea case 4.4 :
+        // `getSectionPersonne():java.util.List<T>`). On retombe sur le raw type.
+        if (type.typeArgs.any { !it.fqName.contains('.') }) return type.fqName
         return "${type.fqName}<${type.typeArgs.joinToString(",") { renderType(it) }}>"
     }
 

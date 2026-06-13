@@ -25,6 +25,7 @@ import com.intellij.psi.JavaRecursiveElementVisitor
 import com.intellij.psi.PsiAnnotation
 import com.intellij.psi.PsiAssignmentExpression
 import com.intellij.psi.PsiBinaryExpression
+import com.intellij.psi.PsiCaseLabelElement
 import com.intellij.psi.PsiCatchSection
 import com.intellij.psi.PsiClass
 import com.intellij.psi.PsiClassObjectAccessExpression
@@ -46,14 +47,17 @@ import com.intellij.psi.PsiModifier
 import com.intellij.psi.PsiModifierList
 import com.intellij.psi.PsiNewExpression
 import com.intellij.psi.PsiReferenceExpression
+import com.intellij.psi.PsiSubstitutor
 import com.intellij.psi.PsiSwitchBlock
 import com.intellij.psi.PsiSwitchExpression
+import com.intellij.psi.PsiSwitchLabelStatementBase
 import com.intellij.psi.PsiSwitchStatement
 import com.intellij.psi.PsiThisExpression
 import com.intellij.psi.PsiThrowStatement
 import com.intellij.psi.PsiTryStatement
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.util.PsiTreeUtil
+import com.intellij.psi.util.TypeConversionUtil
 
 // Adapter PSI — implémentation côté IntelliJ du port CodeIntrospector.
 // Toute la logique PSI vit ici ; le `core/` ne dépend de rien d'IntelliJ.
@@ -146,7 +150,18 @@ class JavaPsiIntrospector(
                     PsiTypeMapper.toResolved(it).fqName
                 }
                 val isStatic = resolved.hasModifierProperty(PsiModifier.STATIC)
-                collected.add(MethodCall(targetType, resolved.name, argTypes, isStatic))
+                // V1.4.5 Bug QQ — vue call-site : PSI calcule la substitution
+                // générique réelle du receveur et du retour. C'est ce que javac
+                // verra dans le test — pas la déclaration (souvent `List<T>`
+                // sur les hiérarchies de modeles Astrea).
+                val receiverFqn = expression.methodExpression.qualifierExpression
+                    ?.type?.let { PsiTypeMapper.toResolved(it).fqName }
+                val resolvedReturn = expression.type?.let { PsiTypeMapper.toResolved(it) }
+                collected.add(MethodCall(
+                    targetType, resolved.name, argTypes, isStatic,
+                    receiverTypeFqn = receiverFqn,
+                    resolvedReturnType = resolvedReturn
+                ))
             }
         })
         return collected
@@ -278,14 +293,40 @@ class JavaPsiIntrospector(
 
     // -- 6. listFields --------------------------------------------------------
 
-    override fun listFields(cls: ClassDescriptor): List<ClassField> {
+    override fun listFields(cls: ClassDescriptor): List<ClassField> =
+        listFieldsWithSubstitutor(cls, PsiSubstitutor.EMPTY)
+
+    // V1.4.3 Bug JJ — substitution des variables de type à travers la chaîne
+    // d'héritage. `getSuperClassSubstitutor` calcule la liaison réelle des
+    // paramètres génériques de `cls` quand on la regarde depuis `viewedFrom`
+    // (ex : M → SaisieMessage01Modele). Sans ça, un champ `modele : M` est
+    // rendu tel quel dans le prompt et le LLM ne peut pas typer le mock.
+    override fun listFieldsInContext(
+        cls: ClassDescriptor,
+        viewedFrom: ClassDescriptor
+    ): List<ClassField> {
+        val declaring = findPsiClass(cls.fqn) ?: return emptyList()
+        val derived = findPsiClass(viewedFrom.fqn) ?: return listFields(cls)
+        if (declaring == derived || !derived.isInheritor(declaring, true)) {
+            return listFields(cls)
+        }
+        val substitutor = TypeConversionUtil.getSuperClassSubstitutor(
+            declaring, derived, PsiSubstitutor.EMPTY
+        )
+        return listFieldsWithSubstitutor(cls, substitutor)
+    }
+
+    private fun listFieldsWithSubstitutor(
+        cls: ClassDescriptor,
+        substitutor: PsiSubstitutor
+    ): List<ClassField> {
         val psiClass = findPsiClass(cls.fqn) ?: return emptyList()
         // Filtrer les PsiEnumConstant — ils sont retournés par PsiClass.fields
         // pour les enums, mais ne sont pas des champs d'instance au sens BLOC 3.
         return psiClass.fields.filter { it !is PsiEnumConstant }.map { field ->
             ClassField(
                 name = field.name,
-                type = PsiTypeMapper.toResolved(field.type),
+                type = PsiTypeMapper.toResolved(substitutor.substitute(field.type)),
                 visibility = field.visibilityKeyword(),
                 annotations = field.modifierList?.annotationFqns().orEmpty(),
                 declaredIn = cls.fqn,
@@ -410,12 +451,16 @@ class JavaPsiIntrospector(
 
             override fun visitSwitchStatement(statement: PsiSwitchStatement) {
                 super.visitSwitchStatement(statement)
-                statement.expression?.let { branches.add(branchRef("SWITCH", it)) }
+                statement.expression?.let {
+                    branches.add(branchRef("SWITCH", it, collectCaseLabels(statement)))
+                }
             }
 
             override fun visitSwitchExpression(expression: PsiSwitchExpression) {
                 super.visitSwitchExpression(expression)
-                expression.expression?.let { branches.add(branchRef("SWITCH", it)) }
+                expression.expression?.let {
+                    branches.add(branchRef("SWITCH", it, collectCaseLabels(expression)))
+                }
             }
 
             override fun visitMethodCallExpression(expression: PsiMethodCallExpression) {
@@ -458,7 +503,11 @@ class JavaPsiIntrospector(
     }
 
     // Texte source de la condition + littéraux constants qui y apparaissent.
-    private fun branchRef(kind: String, condition: PsiExpression): ConditionalBranchRef {
+    private fun branchRef(
+        kind: String,
+        condition: PsiExpression,
+        caseLabels: List<String> = emptyList()
+    ): ConditionalBranchRef {
         val constants = mutableListOf<String>()
         condition.accept(object : JavaRecursiveElementVisitor() {
             override fun visitLiteralExpression(expression: PsiLiteralExpression) {
@@ -466,7 +515,32 @@ class JavaPsiIntrospector(
                 constants.add(expression.text)
             }
         })
-        return ConditionalBranchRef(kind, condition.text, constants.distinct())
+        return ConditionalBranchRef(kind, condition.text, constants.distinct(), caseLabels)
+    }
+
+    // Labels de `case` d'un switch (colon ou arrow), `default` exclu. Chaque
+    // label est résolu en FQN quand c'est un champ statique (cf `caseLabelText`)
+    // pour que le LLM puisse l'importer et le passer tel quel au discriminant
+    // plutôt que de deviner sa valeur littérale (Astrea 4.4 §3.1 BLOC 2).
+    private fun collectCaseLabels(block: PsiSwitchBlock): List<String> {
+        val labels = mutableListOf<String>()
+        block.body?.statements?.forEach { st ->
+            if (st is PsiSwitchLabelStatementBase && !st.isDefaultCase) {
+                st.caseLabelElementList?.elements?.forEach { labels.add(caseLabelText(it)) }
+            }
+        }
+        return labels.distinct()
+    }
+
+    // Référence de case résolue en `Owner.CONSTANT` (FQN) quand le label est un
+    // champ statique / constante d'enum ; sinon texte brut (ex : littéral `30`).
+    private fun caseLabelText(element: PsiCaseLabelElement): String {
+        val resolved = (element as? PsiReferenceExpression)?.resolve()
+        if (resolved is PsiField) {
+            val owner = resolved.containingClass?.qualifiedName
+            if (owner != null) return "$owner.${resolved.name}"
+        }
+        return element.text
     }
 
     // -- 9. listAnnotations ---------------------------------------------------
@@ -547,7 +621,11 @@ class JavaPsiIntrospector(
             annotations = modifierList.annotationFqns(),
             declaredThrows = throwsList.referencedTypes.mapNotNull { it.canonicalText },
             visibility = visibilityKeyword(),
-            isStatic = hasModifierProperty(PsiModifier.STATIC)
+            isStatic = hasModifierProperty(PsiModifier.STATIC),
+            // V1.4.3 Bug II — sans la classe déclarante dans la clé, un override
+            // et sa méthode parente de même forme écrasent mutuellement leur
+            // entrée dans methodCache (dernier toSignature() gagnant).
+            declaredIn = containingClass?.qualifiedName.orEmpty()
         )
         // On garde la table de correspondance signature→PsiMethod pour les
         // appels ultérieurs (listMethodCalls, listFieldAccesses, readMethodBody).
